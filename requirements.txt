@@ -1,0 +1,14 @@
+# pip install -r requirements.txt
+comtypes==1.4.16
+numpy==1.26.4
+pillow==12.2.0
+pycaw==20251023
+requests==2.33.1
+spotipy==2.26.0
+syncedlyrics==1.0.1
+winrt-Windows.Media.Control==3.2.1
+winrt-Windows.Storage.Streams==3.2.1
+
+# soundcard==0.4.4
+
+# для сборки .exe: pyinstaller==6.22.2

@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import base64
+import io
+
+from musicui import config
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+_FALLBACK_COLORS = [[110, 112, 128], [70, 72, 86]]
+
+
+def _dominant_colors(img, count: int = 3) -> list[list[int]]:
+    small = img.resize((64, 64))
+    quantized = small.quantize(colors=8)
+    palette = quantized.getpalette() or []
+    entries = sorted(quantized.getcolors() or [], reverse=True)
+
+    colors: list[list[int]] = []
+    for _, index in entries:
+        chunk = palette[index * 3: index * 3 + 3]
+        if len(chunk) < 3:
+            continue
+        r, g, b = chunk
+        if max(r, g, b) < 34 or min(r, g, b) > 230:
+            continue
+        colors.append([r, g, b])
+        if len(colors) >= count:
+            break
+
+    return colors or list(_FALLBACK_COLORS)
+
+
+def build(data: bytes, url: str | None = None) -> dict | None:
+    if not data or Image is None:
+        return None
+
+    try:
+        with Image.open(io.BytesIO(data)) as raw:
+            img = raw.convert("RGB")
+            img = img.resize((config.COVER_SIZE, config.COVER_SIZE), Image.LANCZOS)
+            colors = _dominant_colors(img)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+    return {"url": url, "b64": b64, "colors": colors}
+
+
+def fetch(url: str | None) -> dict | None:
+    if not url or requests is None:
+        return None
+
+    try:
+        response = requests.get(url, timeout=8)
+        response.raise_for_status()
+        data = response.content
+    except Exception:
+        return None
+
+    return build(data, url)
