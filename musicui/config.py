@@ -40,7 +40,7 @@ GATE_RELEASE_SEC = 0.35
 MUSIC_APPS = frozenset({
     "spotify.exe",
     "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
-    ""browser.exe", "яндекс музыка.exe"
+    "browser.exe", "яндекс музыка.exe"
 })
 
 IGNORE_APPS = frozenset({
