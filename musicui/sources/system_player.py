@@ -14,11 +14,12 @@ try:
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as _Status,
     )
     from winrt.windows.storage.streams import DataReader as _DataReader
-except ImportError:                                     # pragma: no cover
+except ImportError:
     _Manager = None
 
 _DRIFT_SLACK = 5.0
 _MAX_DRIFT = 30.0
+
 
 def _app_key(session) -> str:
     raw = (session.source_app_user_model_id or "").lower()
@@ -67,7 +68,6 @@ class SystemPlayer:
             )
         self._loop = _Loop()
         self._manager = self._loop.call(self._open())
-        self.last_error = None
         self.source_app = None
 
         self._art_lock = threading.Lock()
@@ -147,7 +147,6 @@ class SystemPlayer:
 
     def _advance(self, track_id, stamp, raw: float, duration: float,
                  playing: bool) -> float:
-        
         now = time.monotonic()
         key = (track_id, stamp)
 
@@ -174,11 +173,8 @@ class SystemPlayer:
 
     def get_playback(self):
         try:
-            playback = self._loop.call(self._read())
-            self.last_error = None
-            return playback
-        except Exception as exc:
-            self.last_error = type(exc).__name__
+            return self._loop.call(self._read())
+        except Exception:
             return None
 
     async def _artwork(self, props):

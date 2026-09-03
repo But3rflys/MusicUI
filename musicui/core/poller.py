@@ -9,6 +9,7 @@ from musicui.sources.lyrics_source import fetch_lyrics
 
 COVER_RETRIES = (0.0, 0.6, 1.5, 3.0, 5.0)
 
+
 class Poller(threading.Thread):
     IDLE_GRACE = 2.0
 

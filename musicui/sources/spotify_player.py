@@ -6,7 +6,7 @@ try:
     import spotipy
     from spotipy.oauth2 import SpotifyOAuth
     from spotipy.exceptions import SpotifyException
-except ImportError:                                    # pragma: no cover
+except ImportError:
     spotipy = None
     SpotifyOAuth = None
 
@@ -34,17 +34,11 @@ class SpotifyPlayer:
                 open_browser=True,
             ),
         )
-        self.last_error = None
 
     def get_playback(self):
         try:
             playback = self.sp.current_playback()
-            self.last_error = None
-        except SpotifyException as exc:
-            self.last_error = f"spotify {getattr(exc, 'http_status', '?')}"
-            return None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}"
+        except Exception:
             return None
 
         if not playback or not playback.get("item"):
@@ -54,7 +48,6 @@ class SpotifyPlayer:
         album = item.get("album") or {}
         images = album.get("images") or []
         artists = item.get("artists") or []
-        device = playback.get("device") or {}
 
         return {
             "track_id": item.get("id") or item.get("uri") or item.get("name"),
@@ -65,9 +58,6 @@ class SpotifyPlayer:
             "progress_sec": (playback.get("progress_ms") or 0) / 1000,
             "is_playing": bool(playback.get("is_playing")),
             "cover_url": images[0]["url"] if images else None,
-            "device_name": device.get("name"),
-            "device_active": bool(device.get("is_active")),
-            "is_local": bool(item.get("is_local")),
         }
 
     def _call(self, fn, *args, **kwargs) -> tuple[bool, str]:

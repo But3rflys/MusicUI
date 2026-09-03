@@ -16,7 +16,6 @@ MUSIC, IGNORE, UNKNOWN = "music", "ignore", "unknown"
 try:
     import comtypes
     from comtypes import COMMETHOD, GUID, IUnknown
-    from comtypes.hresult import S_OK
     from ctypes import HRESULT
 
     try:
@@ -40,7 +39,7 @@ try:
 
     AVAILABLE = True
     IMPORT_ERROR = None
-except Exception as exc:                                # pragma: no cover
+except Exception as exc:
     AVAILABLE = False
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
     AudioUtilities = None
@@ -109,7 +108,6 @@ class SessionWatcher(threading.Thread):
                 and time.monotonic() - self._music_seen < config.SOURCE_STICKY_SEC
             )
             return {
-                "available": self.available,
                 "music_pid": self._music_pid,
                 "music_name": self._music_name,
                 "music_peak": self._music_peak,

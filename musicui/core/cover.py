@@ -39,17 +39,30 @@ def _dominant_colors(img, count: int = 3) -> list[list[int]]:
     return colors or list(_FALLBACK_COLORS)
 
 
+def _square(img):
+    width, height = img.size
+    side = min(width, height)
+    if width != height:
+        left = (width - side) // 2
+        top = (height - side) // 2
+        img = img.crop((left, top, left + side, top + side))
+
+    target = min(config.COVER_SIZE, side)
+    if side != target:
+        img = img.resize((target, target), Image.LANCZOS)
+    return img
+
+
 def build(data: bytes, url: str | None = None) -> dict | None:
     if not data or Image is None:
         return None
 
     try:
         with Image.open(io.BytesIO(data)) as raw:
-            img = raw.convert("RGB")
-            img = img.resize((config.COVER_SIZE, config.COVER_SIZE), Image.LANCZOS)
+            img = _square(raw.convert("RGB"))
             colors = _dominant_colors(img)
             buf = io.BytesIO()
-            img.save(buf, format="PNG", optimize=True)
+            img.save(buf, format="JPEG", quality=88, optimize=True)
             b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:
         return None

@@ -13,6 +13,7 @@ else:
 SECRETS_FILE = BASE_DIR / "secrets.json"
 SPOTIPY_CACHE = BASE_DIR / ".cache"
 LAUNCH_FILE = BASE_DIR / ".launch"
+AUTOSTART_FILE = BASE_DIR / ".autostart"
 
 HOST = "127.0.0.1"
 PORT = 8770
@@ -38,8 +39,8 @@ GATE_RELEASE_SEC = 0.35
 
 MUSIC_APPS = frozenset({
     "spotify.exe",
-    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
-    "opera_gx.exe", "yandex.exe", "яндекс музыка.exe"
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
+    ""browser.exe", "яндекс музыка.exe"
 })
 
 IGNORE_APPS = frozenset({
@@ -49,9 +50,14 @@ IGNORE_APPS = frozenset({
     "obs64.exe", "nvcontainer.exe"
 })
 
+GAME_APPS = frozenset({"dota2.exe"})
+WATCH_POLL = 3.0
+WATCH_GRACE = 8.0
+
 UNKNOWN_COUNTS_AS_MUSIC = False
 
-COVER_SIZE = 160
+COVER_SIZE = 256
+LYRICS_WINDOW = 3
 
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
 SCOPE = "user-read-playback-state user-modify-playback-state"
@@ -90,7 +96,21 @@ def write_last_mode(mode: str) -> None:
     except OSError:
         pass
 
-LYRICS_WINDOW = 3
+
+def read_autostart_choice() -> str | None:
+    try:
+        value = AUTOSTART_FILE.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return None
+    return value or None
+
+
+def write_autostart_choice(value: str) -> None:
+    try:
+        AUTOSTART_FILE.write_text(value, encoding="utf-8")
+    except OSError:
+        pass
+
 
 def credentials_status() -> str:
     if os.environ.get("SPOTIFY_CLIENT_ID") and os.environ.get("SPOTIFY_CLIENT_SECRET"):

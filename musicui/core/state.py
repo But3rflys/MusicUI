@@ -135,10 +135,6 @@ class StateStore:
             pos += time.monotonic() - self._pos_ts
         return max(0.0, min(pos, self._track["duration"] or pos))
 
-    def position_now(self) -> float:
-        with self._lock:
-            return self.position_now_locked()
-
     def is_playing(self) -> bool:
         with self._lock:
             return self._playing and self._track is not None

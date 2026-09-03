@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
+import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from musicui import autostart
 from musicui import config
+from musicui import console
+from musicui import procwatch
 from musicui import startup
 from musicui.audio.equalizer import Equalizer
 from musicui.core.controls import Controls
@@ -19,10 +27,76 @@ except Exception:
     pass
 
 
+def _already_running(port: int) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(0.35)
+        return probe.connect_ex((config.HOST, port)) == 0
+
+
+def _log(message: str) -> None:
+    print(f"{time.strftime('%H:%M:%S')} {message}")
+
+
+def _spawn(command: list[str]):
+    try:
+        return subprocess.Popen(command)
+    except OSError as exc:
+        print(f"не удалось запустить игру: {exc}")
+        return None
+
+
+def _wait_for(process) -> None:
+    if process is None:
+        return
+    try:
+        process.wait()
+    except KeyboardInterrupt:
+        pass
+
+
+def _wait_game_gone() -> None:
+    if not procwatch.available():
+        return
+    gone_at = None
+    while not _quit.is_set():
+        if procwatch.running(config.GAME_APPS):
+            gone_at = None
+        else:
+            gone_at = gone_at or time.monotonic()
+            if time.monotonic() - gone_at >= config.WATCH_GRACE:
+                return
+        _quit.wait(config.WATCH_POLL)
+
+
+def stop_running(port: int) -> None:
+    request = urllib.request.Request(f"http://{config.HOST}:{port}/quit", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            response.read()
+        print("сервер остановлен")
+    except OSError:
+        print("сервер не отвечает - похоже, он и не запущен")
+
+
 def _truthy(value: str | None) -> bool | None:
     if value is None:
         return None
     return value.lower() in ("1", "true", "yes", "on")
+
+
+_quit = threading.Event()
+
+
+def _force_exit(delay: float = 3.0) -> None:
+    def burn():
+        time.sleep(delay)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(0)
+
+    threading.Thread(target=burn, name="di-exit", daemon=True).start()
 
 
 class Island:
@@ -54,15 +128,17 @@ class Island:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     island: Island = None
+    idle: StateStore = None
+    mode: str = None
+    httpd: ThreadingHTTPServer = None
     server_version = "MusicUI/1.0"
 
     def log_message(self, *_args):
         pass
 
-    def _send(self, payload: dict, status: int = 200):
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    def _reply(self, body: bytes, content_type: str, status: int):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -71,17 +147,12 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _send(self, payload: dict, status: int = 200):
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self._reply(body, "application/json; charset=utf-8", status)
+
     def _send_text(self, text: str, status: int = 200):
-        body = text.encode("ascii", errors="ignore")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=ascii")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        self._reply(text.encode("ascii", errors="ignore"), "text/plain; charset=ascii", status)
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -97,25 +168,41 @@ class Handler(BaseHTTPRequestHandler):
                 raw = self.rfile.read(length).decode("utf-8", "replace")
                 body = json.loads(raw)
                 if isinstance(body, dict):
-                    query.update({k: v for k, v in body.items()})
+                    query.update(body)
         except (ValueError, OSError):
             pass
         self._route(parsed.path, query)
 
+    @classmethod
+    def _idle_store(cls) -> StateStore:
+        if cls.idle is None:
+            store = StateStore()
+            store.set_mode(cls.mode or config.MODES[0][0])
+            store.set_player_backend("ожидание", None)
+            cls.idle = store
+        return cls.idle
+
     def _route(self, path: str, query: dict):
         island = Handler.island
+        store = island.store if island is not None else Handler._idle_store()
 
         if path in ("/tick", "/t"):
-            self._send(island.store.snapshot_tick())
+            self._send(store.snapshot_tick())
 
         elif path in ("/state", "/", "/s"):
-            self._send(island.store.snapshot_state())
+            self._send(store.snapshot_state())
 
         elif path == "/control":
+            if island is None:
+                self._send({"ok": False, "error": "idle"})
+                return
             action = str(query.get("action") or "")
             self._send(island.controls.dispatch(action, query.get("value")))
 
         elif path == "/config":
+            if island is None:
+                self._send({"ok": False, "error": "idle"})
+                return
             bands = query.get("bands")
             island.equalizer.configure(
                 bands=int(bands) if bands not in (None, "") else None,
@@ -128,10 +215,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"ok": True})
 
         elif path == "/art":
-            art = island.store.cover_b64()
+            art = store.cover_b64()
             self._send_text(art or "", status=200 if art else 404)
 
+        elif path == "/quit":
+            if self.command != "POST":
+                self._send({"ok": False, "error": "post only"}, status=405)
+                return
+            self._send({"ok": True})
+            _quit.set()
+            if Handler.httpd is not None:
+                threading.Thread(target=Handler.httpd.shutdown, daemon=True).start()
+
         elif path == "/health":
+            if island is None:
+                self._send({"ok": True, "idle": True, "mode": Handler.mode})
+                return
             self._send({
                 "ok": True,
                 "mode": island.mode,
@@ -186,17 +285,96 @@ def selftest(island: Island, seconds: float = 20.0):
     print()
 
 
+def launch_with_game(port: int, launch: list[str], verbose: bool) -> None:
+    _log(f"запуск из Steam: {subprocess.list2cmdline(launch)}")
+    game = _spawn(launch)
+    if game is None:
+        _log("игра не запустилась - проверь строку в параметрах запуска Dota 2")
+        return
+    _log(f"игра пошла, pid {game.pid}")
+    config.write_autostart_choice(autostart.DONE)
+
+    island = None
+    httpd = None
+
+    if _already_running(port):
+        _log(f"MusicUI уже слушает {port} - просто жду игру")
+    else:
+        try:
+            mode = config.read_last_mode() or config.FALLBACK_MODE
+            island = Island(mode, verbose=verbose)
+            config.write_last_mode(island.mode)
+            Handler.island = island
+            Handler.mode = island.mode
+            island.start()
+            httpd = ThreadingHTTPServer((config.HOST, port), Handler)
+            httpd.daemon_threads = True
+            Handler.httpd = httpd
+            threading.Thread(target=httpd.serve_forever, name="di-http", daemon=True).start()
+            _log(f"островок поднят, режим {config.mode_title(island.mode)}, порт {port}")
+        except Exception as exc:
+            Handler.island = None
+            _log(f"островок не поднялся: {exc!r} - игра работает дальше")
+
+    _wait_for(game)
+    _log("игра закрылась")
+    _wait_game_gone()
+    _force_exit()
+    Handler.island = None
+    if httpd is not None:
+        httpd.shutdown()
+        try:
+            httpd.server_close()
+        except OSError:
+            pass
+    if island is not None:
+        island.stop()
+    _log("выключился вместе с игрой")
+
+
 def main():
     args = sys.argv[1:]
+
+    launch: list[str] = []
+    if "--launch" in args:
+        index = args.index("--launch")
+        launch, args = args[index + 1:], args[:index]
+
+    if not launch and "--auto" not in args:
+        console.attach()
+    console.ensure_stdio()
+
     verbose = "--verbose" in args or "-v" in args
     port = config.PORT
     if "--port" in args:
         port = int(args[args.index("--port") + 1])
 
+    if "--autostart" in args:
+        index = args.index("--autostart") + 1
+        autostart.handle(args[index] if index < len(args) else None)
+        return
+
+    if "--stop" in args:
+        stop_running(port)
+        return
+
+    if launch:
+        launch_with_game(port, launch, verbose)
+        return
+
+    if _already_running(port):
+        print(f"MusicUI уже работает на http://{config.HOST}:{port} - второй экземпляр не нужен")
+        print(f"остановить его: {autostart.launcher()} --stop")
+        return
+
     if "--mode" in args:
         mode = startup.parse_mode(args[args.index("--mode") + 1])
+    elif "--auto" in args:
+        mode = config.read_last_mode() or config.MODES[0][0]
+        print(f"режим: {config.mode_title(mode)} (как в прошлый раз)")
     else:
         mode = startup.choose_mode()
+        autostart.ask()
 
     island = Island(mode, verbose=verbose)
     config.write_last_mode(island.mode)
@@ -214,14 +392,22 @@ def main():
     island.start()
     httpd = ThreadingHTTPServer((config.HOST, port), Handler)
     httpd.daemon_threads = True
+    Handler.httpd = httpd
 
     print(f"\nрежим: {config.mode_title(island.mode)}")
     print(f"MusicUI: http://{config.HOST}:{port}")
+
+    print(f"выключить из другого окна: {autostart.launcher()} --stop")
     print("Ctrl+C для выхода.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nостановка...")
     finally:
+        _force_exit()
         httpd.shutdown()
+        try:
+            httpd.server_close()
+        except OSError:
+            pass
         island.stop()

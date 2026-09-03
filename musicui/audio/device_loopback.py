@@ -9,7 +9,7 @@ try:
     import soundcard as sc
     AVAILABLE = True
     IMPORT_ERROR = None
-except Exception as exc:                                # pragma: no cover
+except Exception as exc:
     AVAILABLE = False
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
     np = None
@@ -23,8 +23,6 @@ class DeviceLoopback(threading.Thread):
         self.samplerate = samplerate
         self.blocksize = blocksize
         self.ok = False
-        self.error = None if AVAILABLE else IMPORT_ERROR
-        self.device_name = None
         self._stop = threading.Event()
 
     def stop(self):
@@ -35,14 +33,7 @@ class DeviceLoopback(threading.Thread):
             return
 
         try:
-            speaker = sc.default_speaker()
-            self.device_name = str(speaker.name)
-            mic = sc.get_microphone(self.device_name, include_loopback=True)
-        except Exception as exc:
-            self.error = f"{type(exc).__name__}: {exc}"
-            return
-
-        try:
+            mic = sc.get_microphone(str(sc.default_speaker().name), include_loopback=True)
             with mic.recorder(samplerate=self.samplerate, channels=1,
                               blocksize=self.blocksize) as recorder:
                 self.ok = True
@@ -50,7 +41,7 @@ class DeviceLoopback(threading.Thread):
                     data = recorder.record(numframes=self.blocksize)
                     if data is not None and len(data):
                         self.on_frames(np.asarray(data, dtype=np.float32).ravel())
-        except Exception as exc:
-            self.error = f"{type(exc).__name__}: {exc}"
+        except Exception:
+            pass
         finally:
             self.ok = False

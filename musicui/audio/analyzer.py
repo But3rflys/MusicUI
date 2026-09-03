@@ -7,7 +7,7 @@ from musicui import config
 
 try:
     import numpy as np
-except ImportError:                                    # pragma: no cover
+except ImportError:
     np = None
 
 
@@ -63,10 +63,6 @@ class SpectrumAnalyzer:
         self._tilt = tilt
         self._levels = [0.0] * bands
 
-    @property
-    def bands(self) -> int:
-        return len(self._levels)
-
     def feed(self, samples):
         if samples is None or len(samples) == 0:
             return
@@ -110,10 +106,6 @@ class EnvelopeBands:
         if len(self._levels) != bands:
             self._levels = [0.0] * bands
 
-    @property
-    def bands(self) -> int:
-        return len(self._levels)
-
     def update(self, amplitude: float, dt: float) -> list[float]:
         amp = min(1.0, max(0.0, amplitude))
         self._slow = _smooth(self._slow, amp, dt, 0.09, 0.30)
@@ -142,10 +134,6 @@ class SyntheticBands:
         bands = max(1, min(int(bands), config.MAX_BANDS))
         if len(self._levels) != bands:
             self._levels = [0.0] * bands
-
-    @property
-    def bands(self) -> int:
-        return len(self._levels)
 
     def update(self, playing: bool, dt: float) -> list[float]:
         self._phase += dt

@@ -10,6 +10,7 @@ KEYEVENTF_KEYUP = 0x0002
 
 ACTIONS = ("play_pause", "play", "pause", "next", "prev", "seek")
 
+
 def _tap(vk: int) -> bool:
     try:
         user32 = ctypes.windll.user32

@@ -17,7 +17,7 @@ try:
 
     AVAILABLE = True
     IMPORT_ERROR = None
-except Exception as exc:                                # pragma: no cover
+except Exception as exc:
     AVAILABLE = False
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
@@ -241,8 +241,7 @@ class ProcessLoopbackCapture(threading.Thread):
             return
 
         comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
-        client = capture = None
-        event = None
+        client = event = None
         try:
             client = _activate_client(self.pid, self._keep)
 
@@ -291,8 +290,6 @@ class ProcessLoopbackCapture(threading.Thread):
                     client.Stop()
             except Exception:
                 pass
-            capture = None
-            client = None
             if event:
                 _kernel32.CloseHandle(event)
             comtypes.CoUninitialize()

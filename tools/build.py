@@ -31,7 +31,7 @@ def build() -> int:
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
         "--onefile",
-        "--console",
+        "--noconsole",
         "--name", NAME,
         "--paths", str(BASE),
         "--specpath", str(WORK),
