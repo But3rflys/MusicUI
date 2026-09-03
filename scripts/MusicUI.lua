@@ -509,7 +509,7 @@ local function set_line(index)
     last_line_at = now()
 end
 
-local ART_SIZE = 160
+local ART_SIZE = 256
 
 local cover = { track_id = nil, handle = nil, inflight = false, next_try = 0, sent = 0 }
 
@@ -522,10 +522,11 @@ local function cover_reset()
 end
 
 local function cover_build_svg(b64)
+    local mime = (b64:sub(1, 4) == "/9j/") and "image/jpeg" or "image/png"
     return '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="'
         .. ART_SIZE .. '" height="' .. ART_SIZE
         .. '"><image width="' .. ART_SIZE .. '" height="' .. ART_SIZE
-        .. '" preserveAspectRatio="xMidYMid slice" xlink:href="data:image/png;base64,'
+        .. '" preserveAspectRatio="xMidYMid slice" xlink:href="data:' .. mime .. ';base64,'
         .. b64 .. '"/></svg>'
 end
 
