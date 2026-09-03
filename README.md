@@ -6,7 +6,7 @@
 
 Плеер подойдёт любой, который винда показывает в своей медиапанели.
 
-> [**Скачать**](https://github.com/But3rflys/MusicUI/releases) · [исходники](https://github.com/But3rflys/MusicUI)
+> [**Скачать**](https://github.com/But3rflys/MusicUI/releases) // [исходники](https://github.com/But3rflys/MusicUI)
 
 ## Что нужно
 
