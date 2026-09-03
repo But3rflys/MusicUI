@@ -49,7 +49,6 @@ def _looks_like_key(value: str) -> bool:
 
 
 def _ask(label: str) -> str | None:
-    """Значение ключа или None, если юзер передумал."""
     while True:
         try:
             value = _clean(input(f"  {label}: "))
