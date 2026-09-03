@@ -7,8 +7,7 @@ from ctypes import POINTER, c_float, c_uint32, c_ulong
 from musicui import config
 
 BROWSERS = frozenset({
-    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
-    "opera_gx.exe", "browser.exe", "yandex.exe", "vivaldi.exe",
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "browser.exe"
 })
 
 MUSIC, IGNORE, UNKNOWN = "music", "ignore", "unknown"
