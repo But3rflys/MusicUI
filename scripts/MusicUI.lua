@@ -2,7 +2,7 @@ local JSON = require('assets.JSON')
 local has_chronos, chronos = pcall(require, 'chronos')
 
 local floor, min, max, abs = math.floor, math.min, math.max, math.abs
-local exp, fmt = math.exp, string.format
+local exp, cos, fmt = math.exp, math.cos, string.format
 
 local function clamp(v, lo, hi)
     if v < lo then return lo elseif v > hi then return hi end
@@ -14,6 +14,11 @@ local function lerp(a, b, t) return a + (b - a) * t end
 
 local function approach(current, target, speed, dt)
     return current + (target - current) * (1 - exp(-speed * dt))
+end
+
+local function pin(prev, target)
+    if prev and abs(target - prev) < 0.55 then return prev end
+    return floor(target + 0.5)
 end
 
 local function spring(value, vel, target, stiffness, damping, dt)
@@ -40,6 +45,23 @@ local function fmt_time(seconds)
     if not seconds or seconds < 0 or seconds ~= seconds then seconds = 0 end
     local total = floor(seconds + 0.5)
     return fmt("%d:%02d", floor(total / 60), total % 60)
+end
+
+local has_os = type(os) == "table" and type(os.date) == "function"
+local clock_cache = { at = -1, hh = "--", mm = "--" }
+
+local function clock_hm(t)
+    if has_os and t - clock_cache.at >= 0.25 then
+        clock_cache.at = t
+        local ok, stamp = pcall(os.date, "*t")
+        if ok and type(stamp) == "table" then
+            local hh, mm = tonumber(stamp.hour), tonumber(stamp.min)
+            if hh and mm then
+                clock_cache.hh, clock_cache.mm = fmt("%02d", hh), fmt("%02d", mm)
+            end
+        end
+    end
+    return clock_cache.hh, clock_cache.mm
 end
 
 local u8 = utf8
@@ -109,10 +131,13 @@ M.scale     = view:Slider("Масштаб", 70, 150, 100, "%d%%")
 M.pos_x     = view:Slider("Позиция X", 0, 100, 50, "%d%%")
 M.pos_y     = view:Slider("Отступ сверху", 0, 400, 12, "%d px")
 M.autohide  = view:Switch("Сворачивать автоматически", true)
+M.clock     = view:Switch("Часы, когда нет музыки", true)
 M.hide_idle = view:Switch("Скрывать, когда нет трека", true)
 M.dash      = view:Switch("Показывать вне игры", true)
+M.bounce    = view:Switch("Пружинка раскрытия", true)
 
 M.autohide:ToolTip("Раскрытый плеер сам вернётся в капсулу через ~6 секунд")
+M.clock:ToolTip("Без трека/связи с сервером капсула показывает текущее время")
 M.dash:ToolTip("Остров будет виден и в главном меню")
 
 M.accent_auto = gPlayer:Switch("Акцент из обложки", true, "\u{f1fc}")
@@ -145,6 +170,7 @@ M.eq_music:SetCallback(mark_config)
 
 M.accent_auto:SetCallback(function(w) M.accent:Visible(not w:Get()) end, true)
 M.lyr_where:SetCallback(function(w) M.lyr_width:Visible(w:Get() == 0) end, true)
+M.clock:SetCallback(function(w) M.hide_idle:Visible(not w:Get()) end, true)
 
 local C = {}
 
@@ -158,7 +184,9 @@ local function read_menu()
     C.accent        = M.accent:Get()
     C.autohide      = M.autohide:Get()
     C.hide_idle     = M.hide_idle:Get()
+    C.clock         = M.clock:Get()
     C.dashboard     = M.dash:Get()
+    C.bounce        = M.bounce:Get()
 
     C.lyrics      = M.lyrics:Get()
     C.lyr_inside  = M.lyr_where:Get() == 1
@@ -427,11 +455,12 @@ local prev = { title = "", artist = "", line = nil }
 
 local anim = {
     alpha = 0,
-    open = 0, open_vel = 0, open_target = 0,
+    open = 0, open_vel = 0, open_target = 0, fill = 0,
     swap = 1,
     lyr = 1,
     pulse = 0,
     lyr_h = 0,
+    clock = 1,
     pill_w = 0,
     pill_from = 0,
     bars = {},
@@ -482,13 +511,14 @@ end
 
 local ART_SIZE = 160
 
-local cover = { track_id = nil, handle = nil, inflight = false, next_try = 0 }
+local cover = { track_id = nil, handle = nil, inflight = false, next_try = 0, sent = 0 }
 
 local function cover_reset()
     cover.track_id = nil
     cover.handle   = nil
     cover.inflight = false
     cover.next_try = 0
+    cover.sent     = 0
 end
 
 local function cover_build_svg(b64)
@@ -505,10 +535,14 @@ local function cover_update()
         cover.track_id = S.track_id
     end
     if cover.handle or type(S.cover) ~= "table" then return end
-    if cover.inflight then return end
+    if cover.inflight then
+        if now() - cover.sent < 5.0 then return end
+        cover.inflight = false
+    end
     if now() < cover.next_try then return end
 
     cover.inflight = true
+    cover.sent     = now()
     cover.next_try = now() + 1.0
 
     local want_track = S.track_id
@@ -531,20 +565,26 @@ local function cover_update()
     end
 end
 
+local auto_r, auto_g, auto_b
+
 local function accent_target()
-    if C.accent_auto and type(S.cover) == "table" and type(S.cover.colors) == "table" then
-        local first = S.cover.colors[1]
-        if type(first) == "table" then
-            local r, g, b = tonumber(first[1]), tonumber(first[2]), tonumber(first[3])
-            if r and g and b then
-                local peak = max(r, max(g, b))
-                if peak > 0 and peak < 140 then
-                    local k = 140 / peak
-                    r, g, b = r * k, g * k, b * k
+    if C.accent_auto then
+        if type(S.cover) == "table" and type(S.cover.colors) == "table" then
+            local first = S.cover.colors[1]
+            if type(first) == "table" then
+                local r, g, b = tonumber(first[1]), tonumber(first[2]), tonumber(first[3])
+                if r and g and b then
+                    local peak = max(r, max(g, b))
+                    if peak > 0 and peak < 140 then
+                        local k = 140 / peak
+                        r, g, b = r * k, g * k, b * k
+                    end
+                    auto_r, auto_g, auto_b = r, g, b
+                    return r, g, b
                 end
-                return r, g, b
             end
         end
+        if auto_r then return auto_r, auto_g, auto_b end
     end
     local pick = C.accent
     if pick then return pick.r, pick.g, pick.b end
@@ -649,9 +689,19 @@ local function update_bars(dt)
     for i = n + 1, 12 do anim.bars[i] = nil end
 end
 
+local SPRING_SOFT_K, SPRING_SOFT_C = 320, 24
+local SPRING_FIRM_K, SPRING_FIRM_C = 380, 40
+
 local function update_anim(dt)
-    anim.open, anim.open_vel = spring(anim.open, anim.open_vel, anim.open_target, 210, 22, dt)
+    local sk, sc = SPRING_FIRM_K, SPRING_FIRM_C
+    if C.bounce then sk, sc = SPRING_SOFT_K, SPRING_SOFT_C end
+
+    anim.open, anim.open_vel = spring(anim.open, anim.open_vel, anim.open_target,
+                                     sk, sc, min(dt, 0.05))
     anim.open  = clamp(anim.open, -0.12, 1.14)
+
+    local reach = saturate(anim.open)
+    anim.fill = (anim.open_target > 0.5) and max(anim.fill, reach) or min(anim.fill, reach)
     anim.swap  = min(1, anim.swap + dt / 0.34)
     anim.lyr   = min(1, anim.lyr + dt / 0.28)
     anim.pulse = max(0, anim.pulse - dt / 0.45)
@@ -668,6 +718,7 @@ local BASE = {
     compact_w = 220, compact_h = 38,  compact_r = 19,
     open_w    = 380, open_h    = 164, open_r    = 28,
     lyr_extra = 34,
+    clock_w   = 96,
 }
 
 local geom = { x = 0, y = 0, w = 0, h = 0, r = 0, k = 1, sy = 1, open_h = BASE.open_h }
@@ -687,23 +738,46 @@ local function has_lyrics_line()
     return current_line() ~= nil
 end
 
+local function clock_mode()
+    if not C.clock then return false end
+    return (not net.online) or S.title == ""
+end
+
 local function layout(dt)
     local screen = Render.ScreenSize()
     local sy = screen.y / 1080
     local k  = sy * (C.scale or 1)
 
+    local idle   = clock_mode()
+    local goal   = idle and 1 or 0
+    local want_w = idle and BASE.clock_w or BASE.compact_w
+    anim.clock     = approach(anim.clock, goal, 9, dt)
+    anim.compact_w = approach(anim.compact_w or want_w, want_w, 11, dt)
+    if abs(anim.clock - goal) < 0.004 then anim.clock = goal end
+    if abs(anim.compact_w - want_w) < 0.25 then anim.compact_w = want_w end
+
     local extra = (C.lyr_inside and has_lyrics_line()) and BASE.lyr_extra or 0
     anim.lyr_h = approach(anim.lyr_h, extra, 9, dt)
 
     local open_h = BASE.open_h + anim.lyr_h
-    local w = lerp(BASE.compact_w, BASE.open_w, anim.open) * k
-    local h = lerp(BASE.compact_h, open_h, anim.open) * k
-    local r = lerp(BASE.compact_r, BASE.open_r, saturate(anim.open)) * k
+    local w = lerp(anim.compact_w, BASE.open_w, anim.fill) * k
+    local h = lerp(BASE.compact_h, open_h, anim.fill) * k
+    local bw = lerp(anim.compact_w, BASE.open_w, anim.open) * k
+    local bh = lerp(BASE.compact_h, open_h, anim.open) * k
 
     local cx = screen.x * (C.pos_x or 50) / 100
-    geom.x = clamp(cx - w * 0.5, 4, max(4, screen.x - w - 4))
-    geom.y = clamp((C.pos_y or 12) * sy + 2, 2, max(2, screen.y - h - 4))
-    geom.w, geom.h, geom.r = w, h, r
+    geom.x = pin(geom.x, clamp(cx - w * 0.5, 4, max(4, screen.x - w - 4)))
+    geom.y = pin(geom.y, clamp((C.pos_y or 12) * sy + 2, 2, max(2, screen.y - h - 4)))
+    geom.w = pin(geom.w, w)
+    geom.h = pin(geom.h, h)
+    geom.r = lerp(BASE.compact_r, BASE.open_r, anim.fill) * k
+    geom.bx = clamp(cx - bw * 0.5, 4, max(4, screen.x - bw - 4))
+    geom.by = geom.y
+    geom.bw, geom.bh = bw, bh
+    geom.br = lerp(BASE.compact_r, BASE.open_r, saturate(anim.open)) * k
+    geom.cov_p = lerp(4, 16, anim.fill) * k
+    geom.cov_s = lerp(BASE.compact_h - 8, 72, anim.fill) * k
+    geom.cov_r = lerp(10, 16, anim.fill) * k
     geom.k, geom.sy = k, sy
     geom.screen = screen
     geom.open_h = open_h
@@ -774,38 +848,62 @@ local marq = {}
 
 local MARQ_SPEED = 34
 local MARQ_HOLD  = 1.15
+local MARQ_EASE  = 0.14
+local MARQ_MIN   = 5
 
-local function smoothstep(t)
+local function ramp(t, ease)
     t = saturate(t)
-    return t * t * (3 - 2 * t)
+    local e = clamp(ease, 0.02, 0.5)
+    local span = 1 - e
+    if t < e then return t * t / (2 * e * span) end
+    if t > 1 - e then
+        local rest = 1 - t
+        return 1 - rest * rest / (2 * e * span)
+    end
+    return (t - e * 0.5) / span
 end
 
 local function marquee(id, key, overflow, dt)
+    local over = max(overflow, 0)
     local m = marq[id]
     if not m or m.key ~= key then
-        m = { key = key, t0 = now(), off = 0 }
+        m = { key = key, phase = 0, off = 0, over = over, raw = over, calm = 0 }
         marq[id] = m
-    end
-
-    if overflow <= 0.5 then
-        m.off = approach(m.off, 0, 8, dt or 0)
-        return m.off
     end
     if not dt or dt <= 0 then return m.off end
 
-    local travel = overflow / max(1, MARQ_SPEED * geom.k)
-    local hold   = MARQ_HOLD
-    local t      = (now() - m.t0) % ((hold + travel) * 2)
+    local step = abs(over - m.raw)
+    m.raw  = over
+    m.over = approach(m.over, over, 9, dt)
+    if abs(m.over - over) < 0.2 then m.over = over end
 
-    if t < hold then
-        m.off = 0
-    elseif t < hold + travel then
-        m.off = overflow * smoothstep((t - hold) / travel)
-    elseif t < hold * 2 + travel then
-        m.off = overflow
-    else
-        m.off = overflow * (1 - smoothstep((t - hold * 2 - travel) / travel))
+    local live = over > MARQ_MIN * geom.k and step < 1.6
+    m.calm = approach(m.calm, live and 1 or 0, live and 4 or 12, dt)
+    if m.calm < 0.02 then m.phase = 0 end
+
+    local goal = 0
+    if m.over > 0.5 then
+        local travel = m.over / max(1, MARQ_SPEED * geom.k)
+        local period = (MARQ_HOLD + travel) * 2
+        local ease   = clamp(MARQ_EASE / max(travel, 0.05), 0.03, 0.2)
+
+        m.phase = (m.phase + dt * m.calm / period) % 1
+
+        local t = m.phase * period
+        if t < MARQ_HOLD then
+            goal = 0
+        elseif t < MARQ_HOLD + travel then
+            goal = m.over * ramp((t - MARQ_HOLD) / travel, ease)
+        elseif t < MARQ_HOLD * 2 + travel then
+            goal = m.over
+        else
+            goal = m.over * (1 - ramp((t - MARQ_HOLD * 2 - travel) / travel, ease))
+        end
+        goal = min(goal * m.calm, over)
     end
+
+    m.off = approach(m.off, goal, 16, dt)
+    if abs(m.off - goal) < 0.12 then m.off = goal end
     return m.off
 end
 
@@ -1002,20 +1100,46 @@ local function in_rect(mx, my, x, y, w, h)
     return mx >= x and mx <= x + w and my >= y and my <= y + h
 end
 
-local function draw_compact(alpha, dt)
-    local k, x, y, w, h = geom.k, geom.x, geom.y, geom.w, geom.h
-    local pad   = 4 * k
-    local size  = h - pad * 2
-    local pulse = 1 + 0.06 * ease_out(anim.pulse)
-    local grow  = size * (pulse - 1) * 0.5
+local function draw_clock(alpha)
+    local font = fonts.semi or fonts.regular
+    local size = 15 * geom.k
+    local hh, mm = clock_hm(now())
 
-    draw_cover(x + pad - grow, y + pad - grow, size * pulse, 10 * k, alpha)
+    local wh, wc, wm = text_w(font, size, hh), text_w(font, size, ":"),
+                       text_w(font, size, mm)
+    local pill = BASE.compact_h * geom.k
+    local tx = floor(geom.x + (geom.w - (wh + wc + wm)) * 0.5 + 0.5)
+    local ty = floor(geom.y + (pill - text_h(font, size, "00")) * 0.5 + 0.5)
+
+    local main = rgba(255, 255, 255, 234 * alpha)
+    local beat = 0.55 + 0.45 * (0.5 + 0.5 * cos(now() * 6.2832))
+
+    text(font, size, hh, tx, ty, main)
+    text(font, size, ":", floor(tx + wh + 0.5), ty,
+         rgba(255, 255, 255, 234 * alpha * beat))
+    text(font, size, mm, floor(tx + wh + wc + 0.5), ty, main)
+end
+
+local function draw_compact(alpha, dt)
+    local k, x, y = geom.k, geom.x, geom.y
+
+    local clock_a = saturate((anim.clock - 0.35) / 0.65)
+    local music_a = saturate(1 - anim.clock * 1.8)
+
+    if clock_a > 0.01 then draw_clock(alpha * clock_a) end
+
+    alpha = alpha * music_a
+    if alpha <= 0.01 then return end
+
+    local pad  = geom.cov_p
+    local size = geom.cov_s
+    local cw   = anim.compact_w * k
 
     local eq_w = (C.eq and (C.bars or 0) > 0) and 46 * k or 0
-    local eq_h = h * 0.46
-    local eq_x = x + w - pad - eq_w
+    local eq_h = BASE.compact_h * k * 0.46
+    local eq_x = x + cw - 4 * k - eq_w
     if eq_w > 0 then
-        draw_bars(eq_x, y + (h - eq_h) * 0.5, eq_w, eq_h, alpha)
+        draw_bars(eq_x, y + pad + (size - eq_h) * 0.5, eq_w, eq_h, alpha)
     end
 
     local gap = 10 * k
@@ -1027,7 +1151,7 @@ local function draw_compact(alpha, dt)
     local title = (S.title ~= "" and S.title)
                   or (net.online and "Нет трека" or "Сервер не отвечает")
     local font  = fonts.semi or fonts.regular
-    local ty    = y + (h - text_h(font, tsize, title)) * 0.5
+    local ty    = y + pad + (size - text_h(font, tsize, title)) * 0.5
 
     local t     = ease_out(anim.swap)
     local slide = 10 * k
@@ -1048,11 +1172,6 @@ local function draw_expanded(alpha, dt)
     local right = x + w - pad
     local tx    = x + 102 * k
     local box   = max(20 * k, right - tx - 52 * k)
-
-    local pulse = 1 + 0.06 * ease_out(anim.pulse)
-    local cs    = 72 * k
-    local grow  = cs * (pulse - 1) * 0.5
-    draw_cover(x + pad - grow, y + pad - grow, cs * pulse, 16 * k, alpha)
 
     local t     = ease_out(anim.swap)
     local slide = 14 * k
@@ -1168,19 +1287,27 @@ local function draw(dt)
     if anim.alpha <= 0.01 then hit_reset() return end
 
     local alpha = anim.alpha
-    local x, y, w, h, r = geom.x, geom.y, geom.w, geom.h, geom.r
+    local x, y, w, h = geom.x, geom.y, geom.w, geom.h
 
     hit.active   = true
     hit.x, hit.y, hit.w, hit.h = x, y, w, h
     hit.buttons  = {}
     hit.progress = nil
 
-    draw_panel(x, y, w, h, r, alpha)
+    draw_panel(geom.bx, geom.by, geom.bw, geom.bh, geom.br, alpha)
 
-    local compact_a  = saturate(1 - anim.open * 2.2)
-    local expanded_a = saturate((anim.open - 0.45) / 0.55)
+    local compact_a  = saturate(1.06 - anim.fill * 2.8)
+    local expanded_a = saturate((anim.fill - 0.36) / 0.44)
+
+    local cover_a = alpha * saturate(max(saturate(1 - anim.clock * 1.8), expanded_a))
 
     Render.PushClip(Vec2(x, y), Vec2(x + w, y + h), true)
+    if cover_a > 0.01 then
+        local pulse = 1 + 0.06 * ease_out(anim.pulse)
+        local cs    = geom.cov_s
+        local grow  = cs * (pulse - 1) * 0.5
+        draw_cover(x + geom.cov_p - grow, y + geom.cov_p - grow, cs * pulse, geom.cov_r, cover_a)
+    end
     if compact_a  > 0.01 then draw_compact(alpha * compact_a, dt) end
     if expanded_a > 0.01 then draw_expanded(alpha * expanded_a, dt) end
     Render.PopClip()
@@ -1190,11 +1317,16 @@ local function draw(dt)
         hit.progress = nil
     end
 
-    if C.lyrics and not C.lyr_inside then draw_lyrics_pill(alpha, dt) end
+    if C.lyrics and not C.lyr_inside then
+        local la = alpha * (1 - anim.clock)
+        if la > 0.01 then draw_lyrics_pill(la, dt) end
+    end
 end
 
 local function want_alpha(visible)
-    if not visible or not net.online then return 0 end
+    if not visible then return 0 end
+    if C.clock then return 1 end
+    if not net.online then return 0 end
     if C.hide_idle and not S.ok and S.backend ~= "mediakeys" then return 0 end
     return 1
 end
