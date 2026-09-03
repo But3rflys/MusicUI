@@ -41,7 +41,6 @@ def to_clipboard(line: str) -> bool:
 
 
 def _drop_old_run_key() -> None:
-    """Тихо убирает автозапуск старых версий: теперь островок поднимает Steam."""
     try:
         import winreg
 
