@@ -27,6 +27,7 @@ class StateStore:
         self._band_source = "off"
         self._source_app = None
         self._audio_note = None
+        self._volume = None
 
         self._mode = config.MODE_SPOTIFY
         self._player_backend = "?"
@@ -127,6 +128,10 @@ class StateStore:
             self._source_app = app
             self._audio_note = note
 
+    def set_volume(self, volume: dict | None):
+        with self._lock:
+            self._volume = volume
+
     def position_now_locked(self) -> float:
         if not self._track:
             return 0.0
@@ -184,6 +189,7 @@ class StateStore:
                 "bands": self._bands,
                 "band_source": self._band_source,
                 "source_app": self._source_app,
+                "volume": self._volume,
                 "audio_note": self._audio_note,
                 "mode": self._mode,
                 "player_backend": self._player_backend,

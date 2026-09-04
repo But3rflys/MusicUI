@@ -78,12 +78,6 @@ def stop_running(port: int) -> None:
         print("сервер не отвечает - похоже, он и не запущен")
 
 
-def _truthy(value: str | None) -> bool | None:
-    if value is None:
-        return None
-    return value.lower() in ("1", "true", "yes", "on")
-
-
 _quit = threading.Event()
 
 
@@ -110,8 +104,9 @@ class Island:
         self.store.set_player_backend(backend, self.player_error)
 
         self.poller = Poller(self.player, self.store, verbose)
-        self.controls = Controls(self.player, self.store, wake_poller=self.poller.wake)
         self.equalizer = Equalizer(self.store, verbose)
+        self.controls = Controls(self.player, self.store,
+                                 wake_poller=self.poller.wake, audio=self.equalizer)
 
     def start(self):
         self.poller.start()
@@ -206,10 +201,10 @@ class Handler(BaseHTTPRequestHandler):
             bands = query.get("bands")
             island.equalizer.configure(
                 bands=int(bands) if bands not in (None, "") else None,
-                music_only=_truthy(query.get("music_only")),
-                allow_unknown=_truthy(query.get("allow_unknown")),
+                music_only=config.truthy(query.get("music_only")),
+                allow_unknown=config.truthy(query.get("allow_unknown")),
             )
-            enabled = _truthy(query.get("equalizer"))
+            enabled = config.truthy(query.get("equalizer"))
             if enabled is not None:
                 island.equalizer.enabled = enabled
             self._send({"ok": True})
@@ -265,6 +260,10 @@ def selftest(island: Island, seconds: float = 20.0):
           f"{'' if diag['process_loopback'] else ' — ' + str(diag['process_error'])}")
     print(f"микс (фолбэк): {'да' if diag['device_loopback'] else 'нет — ' + str(diag['device_error'])}")
     print(f"numpy/FFT    : {'да' if diag['fft'] else 'нет'}")
+
+    volume = island.equalizer.volume()
+    level = "-" if volume["level"] is None else f"{volume['level']:.2f}"
+    print(f"громкость    : {volume['app'] or 'плеер не найден'} {level}")
 
     print("\nаудиосессии сейчас:")
     for session in sorted(diag["snapshot"]["sessions"], key=lambda s: -s["peak"]):

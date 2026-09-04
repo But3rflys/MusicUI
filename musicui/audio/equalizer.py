@@ -51,6 +51,15 @@ class Equalizer(threading.Thread):
         if allow_unknown is not None:
             self.watcher.allow_unknown = bool(allow_unknown)
 
+    def set_volume(self, level: float) -> float:
+        return self.watcher.set_volume(level)
+
+    def set_mute(self, state: bool | None) -> bool:
+        return self.watcher.set_mute(state)
+
+    def volume(self) -> dict:
+        return self.watcher.volume_snapshot()
+
     def stop(self):
         self._stop.set()
         self.watcher.stop()
@@ -153,6 +162,8 @@ class Equalizer(threading.Thread):
             self._stop.wait(period)
 
     def _tick(self, dt: float):
+        self.store.set_volume(self.watcher.volume_snapshot())
+
         if not self.enabled:
             self.store.set_bands([0.0] * self.bands_count, "off", None, self._note)
             return

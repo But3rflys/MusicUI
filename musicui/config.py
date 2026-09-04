@@ -33,6 +33,8 @@ FFT_SIZE = 2048
 BAND_MIN_HZ = 45.0
 BAND_MAX_HZ = 14000.0
 
+VOLUME_READ_INTERVAL = 0.4
+
 SILENCE_PEAK = 0.0015
 SOURCE_STICKY_SEC = 1.6
 GATE_RELEASE_SEC = 0.35
@@ -40,7 +42,7 @@ GATE_RELEASE_SEC = 0.35
 MUSIC_APPS = frozenset({
     "spotify.exe",
     "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
-    "browser.exe", "яндекс музыка.exe"
+    "browser.exe", "яндекс музыка.exe", "applemusic.exe"
 })
 
 IGNORE_APPS = frozenset({
@@ -110,6 +112,14 @@ def write_autostart_choice(value: str) -> None:
         AUTOSTART_FILE.write_text(value, encoding="utf-8")
     except OSError:
         pass
+
+
+def truthy(value) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def credentials_status() -> str:

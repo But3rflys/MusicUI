@@ -64,14 +64,29 @@ def _priority(name: str) -> int:
     return 2
 
 
-class _Tracked:
-    __slots__ = ("pid", "name", "kind", "meter", "peak", "dead")
+def _volume_app(tracked, playing_name):
+    if playing_name:
+        return playing_name
 
-    def __init__(self, pid, name, kind, meter):
+    best = None
+    for item in tracked:
+        if item.volume is None or item.kind != MUSIC:
+            continue
+        key = (_priority(item.name), item.peak)
+        if best is None or key > best[0]:
+            best = (key, item)
+    return best[1].name if best else None
+
+
+class _Tracked:
+    __slots__ = ("pid", "name", "kind", "meter", "volume", "peak", "dead")
+
+    def __init__(self, pid, name, kind, meter, volume):
         self.pid = pid
         self.name = name
         self.kind = kind
         self.meter = meter
+        self.volume = volume
         self.peak = 0.0
         self.dead = False
 
@@ -94,11 +109,40 @@ class SessionWatcher(threading.Thread):
         self._other_name = None
         self._other_peak = 0.0
 
+        self._volume_app = None
+        self._volume_level = None
+        self._volume_mute = False
+        self._volume_read = 0.0
+        self._want_level = None
+        self._want_mute = None
+
         self.allow_unknown = config.UNKNOWN_COUNTS_AS_MUSIC
         self.music_only = True
 
     def stop(self):
         self._stop.set()
+
+    def set_volume(self, level: float) -> float:
+        level = max(0.0, min(1.0, float(level)))
+        with self._lock:
+            self._want_level = level
+            self._volume_level = level
+        return level
+
+    def set_mute(self, state: bool | None) -> bool:
+        with self._lock:
+            target = (not self._volume_mute) if state is None else bool(state)
+            self._want_mute = target
+            self._volume_mute = target
+        return target
+
+    def volume_snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "app": self._volume_app,
+                "level": self._volume_level,
+                "mute": self._volume_mute,
+            }
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -136,6 +180,8 @@ class SessionWatcher(threading.Thread):
 
                 self._poll_peaks()
                 self._pick_source()
+                self._apply_volume()
+                self._read_volume(now)
                 self._stop.wait(period)
         finally:
             comtypes.CoUninitialize()
@@ -159,7 +205,11 @@ class SessionWatcher(threading.Thread):
                 meter = session._ctl.QueryInterface(IAudioMeterInformation)
             except Exception:
                 continue
-            tracked.append(_Tracked(pid, name.lower(), classify(name), meter))
+            try:
+                volume = session.SimpleAudioVolume
+            except Exception:
+                volume = None
+            tracked.append(_Tracked(pid, name.lower(), classify(name), meter, volume))
 
         with self._lock:
             self._tracked = tracked
@@ -212,3 +262,52 @@ class SessionWatcher(threading.Thread):
 
             self._other_name = loudest_other.name if loudest_other else None
             self._other_peak = loudest_other.peak if loudest_other else 0.0
+
+            app = _volume_app(tracked, self._music_name)
+            if app is not None and app != self._volume_app:
+                self._volume_app = app
+                self._volume_level = None
+                self._volume_read = 0.0
+
+    def _apply_volume(self):
+        with self._lock:
+            level, mute = self._want_level, self._want_mute
+            self._want_level = self._want_mute = None
+            targets = [item for item in self._tracked
+                       if item.volume is not None and item.name == self._volume_app]
+
+        if level is None and mute is None:
+            return
+
+        for item in targets:
+            try:
+                if level is not None:
+                    item.volume.SetMasterVolume(level, None)
+                if mute is not None:
+                    item.volume.SetMute(mute, None)
+            except Exception:
+                item.dead = True
+
+    def _read_volume(self, now: float):
+        if now - self._volume_read < config.VOLUME_READ_INTERVAL:
+            return
+        self._volume_read = now
+
+        with self._lock:
+            target = next((item for item in self._tracked
+                           if item.volume is not None and item.name == self._volume_app), None)
+        if target is None:
+            return
+
+        try:
+            level = round(float(target.volume.GetMasterVolume()), 3)
+            mute = bool(target.volume.GetMute())
+        except Exception:
+            target.dead = True
+            return
+
+        with self._lock:
+            if self._want_level is None:
+                self._volume_level = level
+            if self._want_mute is None:
+                self._volume_mute = mute

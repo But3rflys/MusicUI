@@ -3,12 +3,15 @@ from __future__ import annotations
 import ctypes
 import threading
 
+from musicui import config
+
 VK_MEDIA_NEXT_TRACK = 0xB0
 VK_MEDIA_PREV_TRACK = 0xB1
 VK_MEDIA_PLAY_PAUSE = 0xB3
 KEYEVENTF_KEYUP = 0x0002
 
-ACTIONS = ("play_pause", "play", "pause", "next", "prev", "seek")
+MIXER_ACTIONS = ("volume", "mute")
+ACTIONS = ("play_pause", "play", "pause", "next", "prev", "seek") + MIXER_ACTIONS
 
 
 def _tap(vk: int) -> bool:
@@ -22,10 +25,11 @@ def _tap(vk: int) -> bool:
 
 
 class Controls:
-    def __init__(self, player, store, wake_poller=None):
+    def __init__(self, player, store, wake_poller=None, audio=None):
         self.player = player
         self.store = store
         self.wake_poller = wake_poller
+        self.audio = audio
         self._lock = threading.Lock()
 
     def dispatch(self, action: str, value=None) -> dict:
@@ -39,10 +43,14 @@ class Controls:
                 result = self._skip(forward=True)
             elif action == "prev":
                 result = self._skip(forward=False)
+            elif action == "volume":
+                result = self._volume(value)
+            elif action == "mute":
+                result = self._mute(value)
             else:
                 result = self._seek(value)
 
-        if result.get("ok") and self.wake_poller:
+        if result.get("ok") and self.wake_poller and action not in MIXER_ACTIONS:
             self.wake_poller()
         return result
 
@@ -98,3 +106,30 @@ class Controls:
         else:
             backend = f"failed ({backend})"
         return {"ok": ok, "backend": backend}
+
+    def _mixer(self):
+        if self.audio is None:
+            return None, {"ok": False, "error": "громкость недоступна"}
+
+        state = self.audio.volume()
+        if not state.get("app"):
+            return None, {"ok": False, "error": "плеер не найден в микшере"}
+        return state, None
+
+    def _volume(self, value) -> dict:
+        try:
+            level = float(value)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "volume требует value от 0 до 1"}
+
+        state, error = self._mixer()
+        if error:
+            return error
+        return {"ok": True, "app": state["app"], "level": self.audio.set_volume(level)}
+
+    def _mute(self, value) -> dict:
+        state, error = self._mixer()
+        if error:
+            return error
+        target = None if value in (None, "", "toggle") else config.truthy(value)
+        return {"ok": True, "app": state["app"], "mute": self.audio.set_mute(target)}
