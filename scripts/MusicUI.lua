@@ -284,8 +284,41 @@ local function icon_prev(cx, cy, s, color)
                       Vec2(cx - s * 0.28, cy + s * 0.54), color, s * 0.10, FL)
 end
 
+local function icon_volume(cx, cy, s, color, waves)
+    Render.FilledRect(Vec2(cx - s * 0.52, cy - s * 0.14),
+                      Vec2(cx - s * 0.26, cy + s * 0.14), color, s * 0.06, FL)
+    Render.FilledTriangle({
+        Vec2(cx - s * 0.28, cy - s * 0.14),
+        Vec2(cx - s * 0.04, cy - s * 0.40),
+        Vec2(cx - s * 0.04, cy + s * 0.40),
+    }, color)
+    Render.FilledTriangle({
+        Vec2(cx - s * 0.28, cy - s * 0.14),
+        Vec2(cx - s * 0.28, cy + s * 0.14),
+        Vec2(cx - s * 0.04, cy + s * 0.40),
+    }, color)
+
+    if waves <= 0 then return end
+    Render.PushClip(Vec2(cx + s * 0.12, cy - s * 0.40),
+                    Vec2(cx + s * 0.62, cy + s * 0.40), true)
+    for i = 1, waves do
+        Render.Circle(Vec2(cx - s * 0.04, cy), s * (0.06 + 0.16 * i), color, max(1, s * 0.10))
+    end
+    Render.PopClip()
+end
+
 local ICON_BOX   = 64
 local ICON_SCALE = 1.28
+
+local VOL_BODY = '<path d="M6 25 L18 25 L30 12 L30 52 L18 39 L6 39 Z"/>'
+local VOL_WAVE = {
+    '<path d="M38.2 24.6 A11 11 0 0 1 38.2 39.4" fill="none" stroke="#ffffff"'
+        .. ' stroke-width="5" stroke-linecap="round"/>',
+    '<path d="M44.1 19.3 A19 19 0 0 1 44.1 44.7" fill="none" stroke="#ffffff"'
+        .. ' stroke-width="5" stroke-linecap="round"/>',
+    '<path d="M50.1 13.9 A27 27 0 0 1 50.1 50.1" fill="none" stroke="#ffffff"'
+        .. ' stroke-width="5" stroke-linecap="round"/>',
+}
 
 local ICON_ART = {
     play  = '<path d="M15 9 L53 32 L15 55 Z" stroke="#ffffff" stroke-width="9"'
@@ -298,6 +331,10 @@ local ICON_ART = {
     next  = '<path d="M7 8 L44 32 L7 56 Z" stroke="#ffffff" stroke-width="8"'
          .. ' stroke-linejoin="round"/>'
          .. '<rect x="53" y="4" width="8" height="56" rx="4"/>',
+    vol0  = VOL_BODY,
+    vol1  = VOL_BODY .. VOL_WAVE[1],
+    vol2  = VOL_BODY .. VOL_WAVE[1] .. VOL_WAVE[2],
+    vol3  = VOL_BODY .. VOL_WAVE[1] .. VOL_WAVE[2] .. VOL_WAVE[3],
 }
 
 local icon_tex   = {}
@@ -327,8 +364,13 @@ local function icon_handle(name, size)
     return nil
 end
 
+local function vol_vector(waves)
+    return function(cx, cy, s, color) icon_volume(cx, cy, s, color, waves) end
+end
+
 local VECTOR_ICON = {
     play = icon_play, pause = icon_pause, prev = icon_prev, next = icon_next,
+    vol0 = vol_vector(0), vol1 = vol_vector(1), vol2 = vol_vector(2), vol3 = vol_vector(3),
 }
 
 local function draw_glyph(name, cx, cy, s, color)
@@ -414,10 +456,11 @@ local function fetch(name, path, interval, handler)
     end
 end
 
-local function control(action, value)
+local function control(action, value, quiet)
     local path = "/control?action=" .. action
     if value then path = path .. "&value=" .. fmt("%.3f", value) end
     pcall(HTTP.Request, "GET", net.base .. path, {}, function() end)
+    if quiet then return end
     slot("tick").next_at  = 0
     slot("state").next_at = 0
 end
@@ -464,12 +507,43 @@ local anim = {
     pill_w = 0,
     pill_from = 0,
     bars = {},
-    hover = { prev = 0, pause = 0, next = 0, body = 0 },
+    hover = { prev = 0, pause = 0, next = 0, body = 0, vol = 0 },
     ar = 122, ag = 190, ab = 255,
 }
 
 local last_touch = 0
 local last_click = 0
+
+local vol = {
+    app = nil,
+    level = nil,
+    open = 0,
+    drag = false,
+    pin = 0,
+    touch = 0,
+    sent = -1,
+    sent_at = 0,
+    cx = 0, cy = 0, ir = 0, is = 0,
+    tx = 0, tw = 0, ty = 0,
+}
+
+local function vol_send(level, force)
+    local t = now()
+    if force then
+        if abs(level - vol.sent) < 0.001 then return end
+    elseif abs(level - vol.sent) < 0.004 or t - vol.sent_at < 0.05 then
+        return
+    end
+    vol.sent, vol.sent_at = level, t
+    control("volume", level, true)
+end
+
+local function vol_icon_name(level)
+    if level <= 0.005 then return "vol0" end
+    if level < 0.34 then return "vol1" end
+    if level < 0.68 then return "vol2" end
+    return "vol3"
+end
 
 local function sync_position(value)
     local p = tonumber(value)
@@ -643,6 +717,13 @@ local function apply_state(d)
 
     S.cover = (type(d.cover) == "table") and d.cover or nil
 
+    local mix = (type(d.volume) == "table") and d.volume or nil
+    vol.app = mix and mix.app or nil
+    if not vol.drag and now() - vol.sent_at > 0.6 then
+        local level = mix and tonumber(mix.level) or nil
+        vol.level = level and saturate(level) or nil
+    end
+
     local ly = (type(d.lyrics) == "table") and d.lyrics or nil
     if ly then
         S.lyrics.state  = tostring(ly.state or "idle")
@@ -713,6 +794,12 @@ local function update_anim(dt)
     anim.ab = approach(anim.ab, b, 6, dt)
 
     update_bars(dt)
+
+    if anim.fill < 0.37 then
+        vol.open = approach(vol.open, 0, 16, dt)
+        vol.drag = false
+        vol.pin  = 0
+    end
 end
 
 local BASE = {
@@ -1083,12 +1170,15 @@ local function draw_lyrics_pill(alpha, dt)
     Render.PopClip()
 end
 
-local hit = { active = false, x = 0, y = 0, w = 0, h = 0, buttons = {}, progress = nil }
+local hit = { active = false, x = 0, y = 0, w = 0, h = 0, buttons = {},
+              progress = nil, volume = nil, vol_icon = nil }
 
 local function hit_reset()
     hit.active   = false
     hit.buttons  = {}
     hit.progress = nil
+    hit.volume   = nil
+    hit.vol_icon = nil
 end
 
 local function cursor()
@@ -1099,6 +1189,79 @@ end
 
 local function in_rect(mx, my, x, y, w, h)
     return mx >= x and mx <= x + w and my >= y and my <= y + h
+end
+
+local function draw_track(x1, x2, top, h, level, alpha)
+    Render.FilledRect(Vec2(x1, top), Vec2(x2, top + h),
+                      rgba(255, 255, 255, 38 * alpha), h * 0.5, FL)
+    if level > 0 then
+        Render.FilledRect(Vec2(x1, top), Vec2(x1 + (x2 - x1) * level, top + h),
+                          accent_color(alpha), h * 0.5, FL)
+    end
+end
+
+local function vol_update(mx, my, x1, x2, ty, cy, dt)
+    local k  = geom.k
+    local ir = 20 * k
+    local cx = x2 - ir
+    local tw = max(40 * k, x2 - x1)
+
+    vol.cx, vol.cy, vol.ir, vol.is = cx, cy, ir, 19 * k
+    vol.tx, vol.tw, vol.ty = x1, tw, ty
+
+    local over_icon = in_rect(mx, my, cx - ir, cy - ir, ir * 2, ir * 2)
+    local over_all  = in_rect(mx, my, x1 - 6 * k, ty - 9 * k,
+                              (cx + ir) - (x1 - 6 * k), (cy + ir) - (ty - 9 * k))
+
+    local want = (vol.drag or now() < vol.pin or over_icon
+                  or (vol.open > 0.25 and over_all)) and 1 or 0
+    if want > 0 then vol.touch = now() end
+    if want == 0 and now() - vol.touch < 0.3 then want = 1 end
+
+    vol.open = approach(vol.open, want, 16, dt)
+    anim.hover.vol = approach(anim.hover.vol or 0,
+                              (over_icon or vol.drag) and 1 or 0, 14, dt)
+
+    if vol.drag then
+        last_touch = now()
+        vol.level = saturate((mx - x1) / max(1, tw))
+        vol_send(vol.level, false)
+    end
+
+    local t = ease_out(vol.open)
+    hit.vol_icon = { x = cx - ir, y = cy - ir, w = ir * 2, h = ir * 2 }
+    hit.volume   = (t > 0.85) and { x = x1, y = ty - 6 * k, w = tw, h = 17 * k } or nil
+    return t
+end
+
+local function draw_volume(alpha, t)
+    local k     = geom.k
+    local level = saturate(vol.level or 0)
+
+    if t > 0.01 then
+        local bh  = 5 * k
+        local x2  = vol.tx + vol.tw
+        local x1  = x2 - vol.tw * t
+
+        draw_track(x1, x2, vol.ty, bh, level, alpha * t)
+        Render.FilledCircle(Vec2(x1 + (x2 - x1) * level, vol.ty + bh * 0.5), 5 * k,
+                            rgba(255, 255, 255, 238 * alpha * t))
+    end
+
+    local hv = anim.hover.vol or 0
+    if hv > 0.01 then
+        Render.FilledCircle(Vec2(vol.cx, vol.cy), vol.ir * (0.74 + 0.10 * hv),
+                            rgba(255, 255, 255, 22 * hv * alpha))
+    end
+
+    local name = vol_icon_name(level)
+    if t < 0.99 then
+        draw_glyph(name, vol.cx, vol.cy, vol.is,
+                   rgba(255, 255, 255, (214 + 41 * hv) * alpha * (1 - t)))
+    end
+    if t > 0.01 then
+        draw_glyph(name, vol.cx, vol.cy, vol.is, accent_color(alpha * t))
+    end
 end
 
 local function draw_clock(alpha)
@@ -1223,12 +1386,7 @@ local function draw_expanded(alpha, dt)
     local span   = max(1, bar_x2 - bar_x1)
     local done   = (S.duration or 0) > 0 and saturate(S.pos / S.duration) or 0
 
-    Render.FilledRect(Vec2(bar_x1, bar_y), Vec2(bar_x2, bar_y + bar_h),
-                      rgba(255, 255, 255, 38 * alpha), bar_h * 0.5, FL)
-    if done > 0 then
-        Render.FilledRect(Vec2(bar_x1, bar_y), Vec2(bar_x1 + span * done, bar_y + bar_h),
-                          accent_color(alpha), bar_h * 0.5, FL)
-    end
+    draw_track(bar_x1, bar_x2, bar_y, bar_h, done, alpha)
 
     hit.progress = { x = bar_x1, y = bar_y - 9 * k, w = span, h = bar_h + 18 * k }
     if in_rect(mx, my, hit.progress.x, hit.progress.y, hit.progress.w, hit.progress.h) then
@@ -1236,14 +1394,24 @@ local function draw_expanded(alpha, dt)
                             rgba(255, 255, 255, 238 * alpha))
     end
 
+    local btn_cy = y + h - 27 * k
     local time_y = y + h - 64 * k
-    local dim    = rgba(255, 255, 255, 140 * alpha)
-    text(fonts.regular, 11 * k, fmt_time(S.pos), bar_x1, time_y, dim)
-    local remain = "-" .. fmt_time(max(0, (S.duration or 0) - S.pos))
-    text(fonts.regular, 11 * k, remain,
-         bar_x2 - text_w(fonts.regular, 11 * k, remain), time_y, dim)
+    local vol_on = vol.app ~= nil and vol.level ~= nil
+    local vol_t  = vol_on and vol_update(mx, my, bar_x1, bar_x2,
+                                         y + h - 60 * k, btn_cy, dt) or 0
 
-    local cy      = y + h - 27 * k
+    local time_a = alpha * (1 - vol_t)
+    if time_a > 0.01 then
+        local dim = rgba(255, 255, 255, 140 * time_a)
+        text(fonts.regular, 11 * k, fmt_time(S.pos), bar_x1, time_y, dim)
+        local remain = "-" .. fmt_time(max(0, (S.duration or 0) - S.pos))
+        text(fonts.regular, 11 * k, remain,
+             bar_x2 - text_w(fonts.regular, 11 * k, remain), time_y, dim)
+    end
+
+    if vol_on then draw_volume(alpha, vol_t) end
+
+    local cy      = btn_cy
     local center  = x + w * 0.5
     local spacing = 58 * k
     local radius  = 20 * k
@@ -1294,6 +1462,8 @@ local function draw(dt)
     hit.x, hit.y, hit.w, hit.h = x, y, w, h
     hit.buttons  = {}
     hit.progress = nil
+    hit.volume   = nil
+    hit.vol_icon = nil
 
     draw_panel(geom.bx, geom.by, geom.bw, geom.bh, geom.br, alpha)
 
@@ -1316,6 +1486,8 @@ local function draw(dt)
     if expanded_a < 0.6 then
         hit.buttons  = {}
         hit.progress = nil
+        hit.volume   = nil
+        hit.vol_icon = nil
     end
 
     if C.lyrics and not C.lyr_inside then
@@ -1375,6 +1547,20 @@ local function click(mx, my)
         end
     end
 
+    local vi = hit.vol_icon
+    if vi and in_rect(mx, my, vi.x, vi.y, vi.w, vi.h) then
+        vol.pin = (now() < vol.pin) and 0 or (now() + 4.0)
+        return
+    end
+
+    local vt = hit.volume
+    if vt and in_rect(mx, my, vt.x, vt.y, vt.w, vt.h) then
+        vol.pin   = now() + 4.0
+        vol.level = saturate((mx - vt.x) / max(1, vt.w))
+        vol_send(vol.level, true)
+        return
+    end
+
     local p = hit.progress
     if p and in_rect(mx, my, p.x, p.y, p.w, p.h) and (S.duration or 0) > 0 then
         local target = saturate((mx - p.x) / max(1, p.w)) * S.duration
@@ -1391,6 +1577,16 @@ local function on_key(data)
     if data.key ~= Enum.ButtonCode.KEY_MOUSE1 then return end
 
     local mx, my = cursor()
+
+    if vol.drag and data.event == Enum.EKeyEvent.EKeyEvent_KEY_UP then
+        vol_send(saturate(vol.level or 0), true)
+        vol.drag   = false
+        vol.pin    = now() + 1.5
+        mouse_down = false
+        last_click = now()
+        return false
+    end
+
     if cursor_in_menu(mx, my) or not over_island(mx, my) then
         mouse_down = false
         return
@@ -1399,6 +1595,13 @@ local function on_key(data)
     if data.event == Enum.EKeyEvent.EKeyEvent_KEY_DOWN then
         mouse_down = true
         last_click = now()
+        local vt = hit.volume
+        if vt and in_rect(mx, my, vt.x, vt.y, vt.w, vt.h) then
+            vol.drag  = true
+            vol.pin   = now() + 4.0
+            vol.level = saturate((mx - vt.x) / max(1, vt.w))
+            vol_send(vol.level, true)
+        end
         return false
     elseif data.event == Enum.EKeyEvent.EKeyEvent_KEY_UP then
         if mouse_down then click(mx, my) end
@@ -1481,6 +1684,7 @@ function island.OnGameEnd()
     anim.open_target = 0
     anim.open, anim.open_vel = 0, 0
     mouse_down = false
+    vol.drag, vol.open, vol.pin = false, 0, 0
     hit_reset()
 end
 
