@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 
-from musicui import config
+from musicui import config, logbook
+
+_journal = logbook.get("keys")
 
 _KEY_LEN = 32
 _HEX = set("0123456789abcdef")
@@ -64,6 +66,7 @@ def _ask(label: str) -> str | None:
 
 def wizard() -> bool:
     if not sys.stdin or not sys.stdin.isatty():
+        _journal.warning("cannot ask for keys: no console")
         return False
 
     print(GUIDE)
@@ -81,9 +84,11 @@ def wizard() -> bool:
     try:
         config.save_credentials(client_id, client_secret)
     except OSError as exc:
+        _journal.error(f"could not write {config.SECRETS_FILE.name}: {exc}")
         print(f"\n  не смог записать {config.SECRETS_FILE.name}: {exc}\n")
         return False
 
+    _journal.info(f"keys written to {config.SECRETS_FILE.name}")
     print(f"\n  готово, ключи в {config.SECRETS_FILE.name}")
     print("  при первом запуске режима «Spotify» откроется браузер —")
     print("  там нужно один раз разрешить доступ.\n")
@@ -93,9 +98,11 @@ def wizard() -> bool:
 def ensure() -> bool:
     try:
         config.load_credentials()
+        _journal.debug(f"keys in place: {config.SECRETS_FILE.name if config.SECRETS_FILE.exists() else 'env'}")
         return True
     except RuntimeError:
         pass
 
+    _journal.info("no keys, starting the setup wizard")
     print("\nРежиму «Spotify» нужны ключи приложения, а их ещё нет.")
     return wizard()

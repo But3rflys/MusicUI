@@ -71,13 +71,9 @@ def attach(title: str = "MusicUI") -> bool:
 def crash(exc: BaseException) -> None:
     import traceback
 
-    from musicui import config
+    from musicui import logbook
 
-    text = "".join(traceback.format_exception(exc))
-    try:
-        with open(config.BASE_DIR / "error.log", "a", encoding="utf-8") as log:
-            log.write(text)
-            log.write("\n")
-    except OSError:
-        pass
-    print(text, file=sys.stderr)
+    print("".join(traceback.format_exception(exc)), file=sys.stderr)
+    where = logbook.crash(exc)
+    if where is not None:
+        print(f"всё это лежит в логе: {where}", file=sys.stderr)

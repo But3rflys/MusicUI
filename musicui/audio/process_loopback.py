@@ -6,7 +6,9 @@ from ctypes import (POINTER, Structure, Union, byref, c_byte, c_int, c_longlong,
                     string_at, windll)
 from ctypes.wintypes import BOOL, DWORD, HANDLE, LPCWSTR, WORD
 
-from musicui import config
+from musicui import config, logbook
+
+_journal = logbook.get("loopback")
 
 try:
     from ctypes import HRESULT
@@ -237,6 +239,7 @@ class ProcessLoopbackCapture(threading.Thread):
 
     def run(self):
         if not AVAILABLE:
+            _journal.debug(f"per-process capture unavailable: {IMPORT_ERROR}")
             self.started_event.set()
             return
 
@@ -274,6 +277,7 @@ class ProcessLoopbackCapture(threading.Thread):
 
             self.ok = True
             self.started_event.set()
+            _journal.debug(f"per-process capture pid {self.pid} started")
 
             while not self._stop.is_set():
                 if _kernel32.WaitForSingleObject(event, 200) == WAIT_TIMEOUT:
@@ -282,6 +286,7 @@ class ProcessLoopbackCapture(threading.Thread):
 
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
+            _journal.debug(f"per-process capture pid {self.pid} died: {self.error}")
         finally:
             self.ok = False
             self.started_event.set()

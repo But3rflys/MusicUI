@@ -4,20 +4,24 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from musicui import logbook
 from musicui.core import cover
 from musicui.sources.lyrics_source import fetch_lyrics
 
 COVER_RETRIES = (0.0, 0.6, 1.5, 3.0, 5.0)
 
+_journal = logbook.get("poller")
+
 
 class Poller(threading.Thread):
     IDLE_GRACE = 2.0
 
-    def __init__(self, player, store, verbose: bool = False):
+    def __init__(self, player, store):
         super().__init__(name="di-poller", daemon=True)
         self.player = player
         self.store = store
-        self.verbose = verbose
+        self._trouble = logbook.Changed("poller")
+        self._was_playing = False
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._fetchers = ThreadPoolExecutor(max_workers=3, thread_name_prefix="di-fetch")
@@ -47,9 +51,9 @@ class Poller(threading.Thread):
             try:
                 if self.player is not None:
                     playback = self.player.get_playback()
+                self._trouble.clear()
             except Exception as exc:
-                if self.verbose:
-                    print(f"[poller] {type(exc).__name__}: {exc}")
+                self._trouble.say(f"player poll failed: {type(exc).__name__}: {exc}")
 
             if playback is None and self.player is not None:
                 blank_since = blank_since or time.monotonic()
@@ -63,6 +67,11 @@ class Poller(threading.Thread):
             if changed_track and playback:
                 self._on_new_track(changed_track, playback)
 
+            playing = bool(playback and playback.get("is_playing"))
+            if playing != self._was_playing:
+                self._was_playing = playing
+                _journal.debug("playing" if playing else "paused")
+
             self._sleep(self._poll if playback else self._poll_idle)
 
     def _sleep(self, seconds: float):
@@ -70,8 +79,8 @@ class Poller(threading.Thread):
         self._wake.clear()
 
     def _on_new_track(self, track_id: str, playback: dict):
-        if self.verbose:
-            print(f"\n[track] {playback['artist_name']} — {playback['track_name']}")
+        _journal.info(f"track: {playback['artist_name']} — {playback['track_name']}"
+                      f" [{playback['duration_sec']:.0f}s]")
 
         art = self._cover_cache.get(track_id)
         if art:
@@ -106,18 +115,16 @@ class Poller(threading.Thread):
                 data = self._artwork(track_id) if self._artwork else None
                 art = cover.build(data) if data else cover.fetch(url)
             except Exception as exc:
-                if self.verbose:
-                    print(f"[cover] {type(exc).__name__}: {exc}")
+                _journal.warning(f"cover: {type(exc).__name__}: {exc}")
 
             if art:
                 self._remember(self._cover_cache, track_id, art)
                 self.store.set_cover(track_id, art)
-                if self.verbose and attempt:
-                    print(f"[cover] получена с {attempt + 1}-й попытки")
+                if attempt:
+                    _journal.debug(f"cover in place, attempt {attempt + 1}")
                 return
 
-        if self.verbose:
-            print("[cover] не отдалась, оставляем плитку с акцентом")
+        _journal.info("no cover came back, keeping the accent tile")
 
     def _fetch_lyrics(self, track_id: str, title: str, artist: str):
         started = time.monotonic()
@@ -125,12 +132,10 @@ class Poller(threading.Thread):
             mode, entries = fetch_lyrics(title, artist)
         except Exception as exc:
             mode, entries = None, []
-            if self.verbose:
-                print(f"[lyrics] {type(exc).__name__}: {exc}")
+            _journal.warning(f"lyrics: {type(exc).__name__}: {exc}")
 
         self._remember(self._lyrics_cache, track_id, (mode, entries))
         self.store.set_lyrics(track_id, mode, entries)
-        if self.verbose:
-            took = time.monotonic() - started
-            found = f"{mode}-level, {len(entries)} записей" if entries else "не найдена"
-            print(f"[lyrics] {found} ({took:.1f}с)")
+        took = time.monotonic() - started
+        found = f"{mode}-level, {len(entries)} entries" if entries else "not found"
+        _journal.info(f"lyrics: {found} ({took:.1f}s)")

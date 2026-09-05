@@ -2,7 +2,10 @@ import logging
 
 import syncedlyrics
 
+from musicui import logbook
 from musicui.sources.lyrics_parser import parse_lyrics
+
+_journal = logbook.get("lyrics")
 
 _lib_log = logging.getLogger("syncedlyrics")
 _lib_log.setLevel(logging.CRITICAL)
@@ -41,9 +44,11 @@ _silence_provider_logs()
 
 def fetch_lyrics(track_name, artist_name):
     query = f"{track_name} {artist_name}"
+    _journal.debug(f"searching lyrics: {query}")
     lrc_text = syncedlyrics.search(query, enhanced=True)
 
     if not lrc_text:
+        _journal.debug("providers returned nothing")
         return None, []
 
     return parse_lyrics(lrc_text)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from musicui import config
+from musicui import config, logbook
 
 try:
     import spotipy
@@ -12,6 +12,9 @@ except ImportError:
 
     class SpotifyException(Exception):
         http_status = 0
+
+_journal = logbook.get("spotify")
+_trouble = logbook.Changed("spotify")
 
 
 class SpotifyPlayer:
@@ -34,12 +37,15 @@ class SpotifyPlayer:
                 open_browser=True,
             ),
         )
+        _journal.debug(f"client ready, token cache {config.SPOTIPY_CACHE.name}")
 
     def get_playback(self):
         try:
             playback = self.sp.current_playback()
-        except Exception:
+        except Exception as exc:
+            _trouble.say(f"current_playback: {type(exc).__name__}: {exc}")
             return None
+        _trouble.clear()
 
         if not playback or not playback.get("item"):
             return None
@@ -61,17 +67,17 @@ class SpotifyPlayer:
         }
 
     def _call(self, fn, *args, **kwargs) -> tuple[bool, str]:
+        name = getattr(fn, "__name__", "spotify")
         try:
             fn(*args, **kwargs)
             return True, "spotify"
         except SpotifyException as exc:
             status = getattr(exc, "http_status", 0)
-            if status == 403:
-                return False, "no-premium"
-            if status == 404:
-                return False, "no-device"
-            return False, f"http-{status}"
+            reason = {403: "no-premium", 404: "no-device"}.get(status, f"http-{status}")
+            _journal.warning(f"{name}: {reason}")
+            return False, reason
         except Exception as exc:
+            _journal.warning(f"{name}: {type(exc).__name__}: {exc}")
             return False, type(exc).__name__
 
     def play(self):

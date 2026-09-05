@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -20,9 +21,7 @@ def build() -> int:
         print(f"нет {ENTRY} - проект неполный, качай заново")
         return 1
 
-    try:
-        import PyInstaller  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("PyInstaller") is None:
         print("PyInstaller не установлен:\n  pip install pyinstaller")
         return 1
 

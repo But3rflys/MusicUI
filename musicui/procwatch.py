@@ -3,6 +3,10 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 
+from musicui import logbook
+
+_trouble = logbook.Changed("procs")
+
 TH32CS_SNAPPROCESS = 0x0002
 ERROR_BAD_LENGTH = 24
 MAX_PATH = 260
@@ -46,11 +50,15 @@ def _walk():
         snapshot = _K32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         if snapshot != _INVALID and snapshot is not None:
             break
-        if ctypes.get_last_error() != ERROR_BAD_LENGTH:
+        code = ctypes.get_last_error()
+        if code != ERROR_BAD_LENGTH:
+            _trouble.say(f"process snapshot failed, code {code}")
             return
     else:
+        _trouble.say("process snapshot failed after three tries")
         return
 
+    _trouble.clear()
     entry = _Entry()
     entry.dwSize = ctypes.sizeof(_Entry)
     try:

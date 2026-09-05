@@ -6,7 +6,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from musicui import config
+from musicui import config, logbook
 
 try:
     from winrt.windows.media.control import (
@@ -19,6 +19,10 @@ except ImportError:
 
 _DRIFT_SLACK = 5.0
 _MAX_DRIFT = 30.0
+_MIN_SEEK_TICKS = 1_000_000
+
+_journal = logbook.get("player")
+_trouble = logbook.Changed("player")
 
 
 def _app_key(session) -> str:
@@ -69,12 +73,14 @@ class SystemPlayer:
         self._loop = _Loop()
         self._manager = self._loop.call(self._open())
         self.source_app = None
+        _journal.debug("system media session connected")
 
         self._art_lock = threading.Lock()
         self._art_id = None
         self._art_props = None
 
         self._clock_key = None
+        self._clock_start = 0.0
         self._clock_pos = 0.0
         self._clock_at = 0.0
         self._clock_playing = False
@@ -84,6 +90,7 @@ class SystemPlayer:
         return await _Manager.request_async()
 
     def stop(self):
+        _journal.debug("releasing the media session")
         self._loop.stop()
 
     def _session(self):
@@ -120,6 +127,7 @@ class SystemPlayer:
 
         timeline = session.get_timeline_properties()
         start = _seconds(timeline.start_time)
+        self._clock_start = start
         duration = max(0.0, _seconds(timeline.end_time) - start)
         raw = max(0.0, _seconds(timeline.position) - start)
         playing = status == _Status.PLAYING
@@ -132,7 +140,11 @@ class SystemPlayer:
 
         with self._art_lock:
             self._art_id, self._art_props = track_id, props
-        self.source_app = _app_key(session)
+
+        app = _app_key(session)
+        if app != self.source_app:
+            self.source_app = app
+            _journal.info(f"media session: {app}")
 
         return {
             "track_id": track_id,
@@ -173,9 +185,12 @@ class SystemPlayer:
 
     def get_playback(self):
         try:
-            return self._loop.call(self._read())
-        except Exception:
+            playback = self._loop.call(self._read())
+        except Exception as exc:
+            _trouble.say(f"session did not answer: {type(exc).__name__}: {exc}")
             return None
+        _trouble.clear()
+        return playback
 
     async def _artwork(self, props):
         reference = props.thumbnail
@@ -204,7 +219,8 @@ class SystemPlayer:
 
         try:
             return self._loop.call(self._artwork(props), timeout=6.0)
-        except Exception:
+        except Exception as exc:
+            _journal.debug(f"session cover did not arrive: {type(exc).__name__}: {exc}")
             return None
 
     async def _command(self, name: str, *args) -> tuple[bool, str]:
@@ -217,7 +233,10 @@ class SystemPlayer:
         try:
             ok, reason = self._loop.call(self._command(name, *args))
         except Exception as exc:
+            _journal.warning(f"{name}: {type(exc).__name__}: {exc}")
             return False, type(exc).__name__
+        if not ok:
+            _journal.debug(f"{name}: session refused ({reason})")
         return (True, reason) if ok else (False, "refused")
 
     def play(self):
@@ -233,5 +252,6 @@ class SystemPlayer:
         return self._run("try_skip_previous_async")
 
     def seek(self, position_sec: float):
-        ticks = int(max(0.0, position_sec) * 10_000_000)
-        return self._run("try_change_playback_position_async", ticks)
+        ticks = int((max(0.0, position_sec) + self._clock_start) * 10_000_000)
+        return self._run("try_change_playback_position_async",
+                         max(_MIN_SEEK_TICKS, ticks))

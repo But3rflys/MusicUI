@@ -14,6 +14,8 @@ SECRETS_FILE = BASE_DIR / "secrets.json"
 SPOTIPY_CACHE = BASE_DIR / ".cache"
 LAUNCH_FILE = BASE_DIR / ".launch"
 AUTOSTART_FILE = BASE_DIR / ".autostart"
+LOG_FILE = BASE_DIR / "musicui.log"
+LOG_STALE = ("error.log",)
 
 HOST = "127.0.0.1"
 PORT = 8770
@@ -40,7 +42,7 @@ SOURCE_STICKY_SEC = 1.6
 GATE_RELEASE_SEC = 0.35
 
 MUSIC_APPS = frozenset({
-    "spotify.exe",
+    "spotify.exe", "dotify.exe", "soundcloud-desktop.exe",
     "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe",
     "browser.exe", "яндекс музыка.exe", "applemusic.exe"
 })

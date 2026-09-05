@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
 
-from musicui import config
+from musicui import config, logbook
 from musicui.audio import device_loopback, process_loopback, sessions
 from musicui.audio.analyzer import EnvelopeBands, SpectrumAnalyzer, SyntheticBands
 
 PEAK_GAIN = 3.2
 
+_journal = logbook.get("audio")
+
 
 class Equalizer(threading.Thread):
-    def __init__(self, store, verbose: bool = False):
+    def __init__(self, store):
         super().__init__(name="di-equalizer", daemon=True)
         self.store = store
-        self.verbose = verbose
+        self._trouble = logbook.Changed("audio")
+        self._said = logbook.Changed("audio", logging.DEBUG)
 
         self.watcher = sessions.SessionWatcher()
         self.envelope = EnvelopeBands(config.DEFAULT_BANDS)
@@ -40,6 +44,8 @@ class Equalizer(threading.Thread):
         self._note = None
 
     def configure(self, bands=None, music_only=None, allow_unknown=None):
+        _journal.debug(f"configure: bands={bands} music_only={music_only}"
+                       f" allow_unknown={allow_unknown}")
         if bands is not None:
             self.bands_count = max(1, min(int(bands), config.MAX_BANDS))
             self.envelope.set_bands(self.bands_count)
@@ -117,11 +123,11 @@ class Equalizer(threading.Thread):
                 error = self._capture.error
                 self._release_capture()
                 self._proc_fails += 1
+                _journal.debug(f"per-process capture pid {pid} failed to start: {error}")
                 if self._proc_fails >= 2:
                     self._proc_disabled = True
-                    self._note = f"process loopback недоступен -> микс ({error})"
-                    if self.verbose:
-                        print(f"[audio] {self._note}")
+                    self._note = f"process loopback unavailable -> device mix ({error})"
+                    _journal.warning(self._note)
                 return False
             return False
 
@@ -143,8 +149,17 @@ class Equalizer(threading.Thread):
             return False
         return self._device.ok
 
+    def _intro(self) -> str:
+        return "; ".join((
+            f"mixer {'yes' if self.watcher.available else 'no: ' + str(self.watcher.error)}",
+            f"per-process {'yes' if not self._proc_disabled else 'no: ' + str(process_loopback.IMPORT_ERROR)}",
+            f"device mix {'yes' if device_loopback.AVAILABLE else 'no: ' + str(device_loopback.IMPORT_ERROR)}",
+            f"FFT {'yes' if self.analyzer is not None else 'no'}",
+        ))
+
     def run(self):
         self.watcher.start()
+        _journal.info(self._intro())
         period = 1.0 / max(1, config.AUDIO_FPS)
         last = time.monotonic()
 
@@ -155,9 +170,9 @@ class Equalizer(threading.Thread):
 
             try:
                 self._tick(dt)
+                self._trouble.clear()
             except Exception as exc:
-                if self.verbose:
-                    print(f"[audio] {type(exc).__name__}: {exc}")
+                self._trouble.say(f"tick failed: {type(exc).__name__}: {exc}")
 
             self._stop.wait(period)
 
@@ -197,19 +212,19 @@ class Equalizer(threading.Thread):
             if polluted:
                 levels = self.envelope.update(amp, dt)
                 source = "envelope"
-                self._note = f"микс занят {snap['other_name']} -> огибающая {music_name}"
+                self._note = f"device mix busy with {snap['other_name']} -> envelope {music_name}"
             else:
                 frames = self._take_frames()
                 if frames is not None:
                     self.analyzer.feed(frames)
                 levels = self.analyzer.compute(dt)
                 source = "device"
-                self._note = f"микс устройства, уровень от {music_name}"
+                self._note = f"device mix, level from {music_name}"
 
         elif self.watcher.available and music_pid is not None:
             levels = self.envelope.update(amp, dt)
             source = "envelope"
-            self._note = f"огибающая {music_name}"
+            self._note = f"envelope {music_name}"
 
         else:
             levels = self.synth.update(playing, dt)
@@ -223,3 +238,4 @@ class Equalizer(threading.Thread):
             source = "idle" if source != "off" else source
 
         self.store.set_bands(gated, source, music_name, self._note)
+        self._said.say(f"{source}: {self._note}" if self._note else source)

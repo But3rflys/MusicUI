@@ -4,7 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from musicui import config
+from musicui import config, logbook
+
+_journal = logbook.get("autostart")
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "MusicUI"
@@ -54,6 +56,8 @@ def show() -> None:
     line = steam_line()
     _drop_old_run_key()
     copied = to_clipboard(line)
+    _journal.info(f"showed the Dota launch line, clipboard: {'yes' if copied else 'no'}")
+    _journal.debug(line)
 
     print("\nчтобы островок сам поднимался с Дотой, нужна одна строка в параметрах запуска.")
     print("вот она" + (" - уже в буфере обмена:" if copied else ":"))
@@ -72,6 +76,7 @@ def show() -> None:
 def _quiet() -> None:
     _drop_old_run_key()
     config.write_autostart_choice(QUIET)
+    _journal.info("autostart reminder turned off")
     print("\nладно, больше не напомню")
     print(f"строка для Доты, когда понадобится: {launcher()} --autostart")
 

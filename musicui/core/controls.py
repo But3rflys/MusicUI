@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import threading
 
-from musicui import config
+from musicui import config, logbook
 
 VK_MEDIA_NEXT_TRACK = 0xB0
 VK_MEDIA_PREV_TRACK = 0xB1
@@ -13,6 +13,8 @@ KEYEVENTF_KEYUP = 0x0002
 MIXER_ACTIONS = ("volume", "mute")
 ACTIONS = ("play_pause", "play", "pause", "next", "prev", "seek") + MIXER_ACTIONS
 
+_journal = logbook.get("control")
+
 
 def _tap(vk: int) -> bool:
     try:
@@ -20,8 +22,20 @@ def _tap(vk: int) -> bool:
         user32.keybd_event(vk, 0, 0, 0)
         user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
         return True
-    except Exception:
+    except Exception as exc:
+        _journal.warning(f"media key {vk:#04x} did not fire: {type(exc).__name__}: {exc}")
         return False
+
+
+def _tell(action: str, value, result: dict) -> None:
+    parts = [action]
+    if value not in (None, ""):
+        parts.append(str(value))
+    parts.append("ok" if result.get("ok") else "miss")
+    detail = result.get("error") or result.get("backend")
+    if detail:
+        parts.append(f"({detail})")
+    _journal.info(" ".join(parts))
 
 
 class Controls:
@@ -34,6 +48,7 @@ class Controls:
 
     def dispatch(self, action: str, value=None) -> dict:
         if action not in ACTIONS:
+            _journal.warning(f"unknown command: {action!r}")
             return {"ok": False, "error": f"unknown action: {action}"}
 
         with self._lock:
@@ -52,6 +67,8 @@ class Controls:
 
         if result.get("ok") and self.wake_poller and action not in MIXER_ACTIONS:
             self.wake_poller()
+
+        _tell(action, value, result)
         return result
 
     def _toggle(self, action: str) -> dict:

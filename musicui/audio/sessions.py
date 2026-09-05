@@ -4,13 +4,15 @@ import threading
 import time
 from ctypes import POINTER, c_float, c_uint32, c_ulong
 
-from musicui import config
+from musicui import config, logbook
 
 BROWSERS = frozenset({
     "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "browser.exe"
 })
 
 MUSIC, IGNORE, UNKNOWN = "music", "ignore", "unknown"
+
+_journal = logbook.get("sessions")
 
 try:
     import comtypes
@@ -97,6 +99,7 @@ class SessionWatcher(threading.Thread):
         self.available = AVAILABLE
         self.error = IMPORT_ERROR
 
+        self._trouble = logbook.Changed("sessions")
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._tracked: list[_Tracked] = []
@@ -165,6 +168,7 @@ class SessionWatcher(threading.Thread):
 
     def run(self):
         if not self.available:
+            _journal.error(f"mixer unavailable: {self.error}")
             return
 
         comtypes.CoInitialize()
@@ -189,8 +193,10 @@ class SessionWatcher(threading.Thread):
     def _enumerate(self):
         try:
             sessions = AudioUtilities.GetAllSessions()
+            self._trouble.clear()
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
+            self._trouble.say(f"mixer sweep failed: {self.error}")
             return
 
         tracked: list[_Tracked] = []
@@ -212,7 +218,15 @@ class SessionWatcher(threading.Thread):
             tracked.append(_Tracked(pid, name.lower(), classify(name), meter, volume))
 
         with self._lock:
+            before = {(item.pid, item.name) for item in self._tracked}
             self._tracked = tracked
+
+        now = {(item.pid, item.name) for item in tracked}
+        kinds = {(item.pid, item.name): item.kind for item in tracked}
+        for pid, name in sorted(now - before):
+            _journal.debug(f"+ {name} pid {pid} [{kinds[(pid, name)]}]")
+        for pid, name in sorted(before - now):
+            _journal.debug(f"- {name} pid {pid}")
 
     def _poll_peaks(self):
         with self._lock:
@@ -248,6 +262,7 @@ class SessionWatcher(threading.Thread):
                     loudest_other = item
 
         with self._lock:
+            was_pid, was_name = self._music_pid, self._music_name
             if best is not None:
                 item = best[1]
                 self._music_pid = item.pid
@@ -264,10 +279,20 @@ class SessionWatcher(threading.Thread):
             self._other_peak = loudest_other.peak if loudest_other else 0.0
 
             app = _volume_app(tracked, self._music_name)
-            if app is not None and app != self._volume_app:
+            switched = app is not None and app != self._volume_app
+            if switched:
                 self._volume_app = app
                 self._volume_level = None
                 self._volume_read = 0.0
+
+            source = (self._music_pid, self._music_name)
+
+        if source != (was_pid, was_name):
+            pid, name = source
+            _journal.info(f"audio source: {name} (pid {pid})" if name
+                          else "audio source gone")
+        if switched:
+            _journal.debug(f"reading volume from {app}")
 
     def _apply_volume(self):
         with self._lock:
@@ -279,14 +304,16 @@ class SessionWatcher(threading.Thread):
         if level is None and mute is None:
             return
 
+        _journal.debug(f"mixer: level={level} mute={mute} targets={len(targets)}")
         for item in targets:
             try:
                 if level is not None:
                     item.volume.SetMasterVolume(level, None)
                 if mute is not None:
                     item.volume.SetMute(mute, None)
-            except Exception:
+            except Exception as exc:
                 item.dead = True
+                _journal.debug(f"{item.name} rejected volume: {type(exc).__name__}: {exc}")
 
     def _read_volume(self, now: float):
         if now - self._volume_read < config.VOLUME_READ_INTERVAL:
@@ -302,8 +329,9 @@ class SessionWatcher(threading.Thread):
         try:
             level = round(float(target.volume.GetMasterVolume()), 3)
             mute = bool(target.volume.GetMute())
-        except Exception:
+        except Exception as exc:
             target.dead = True
+            _journal.debug(f"{target.name} gave no volume: {type(exc).__name__}: {exc}")
             return
 
         with self._lock:
