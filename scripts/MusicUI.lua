@@ -527,6 +527,12 @@ local vol = {
     tx = 0, tw = 0, ty = 0,
 }
 
+local seek = {
+    drag = false,
+    at = 0,
+    hold = 0,
+}
+
 local function vol_send(level, force)
     local t = now()
     if force then
@@ -548,6 +554,11 @@ end
 local function sync_position(value)
     local p = tonumber(value)
     if not p then return end
+    if seek.drag then return end
+    if now() < seek.hold then
+        if abs(p - seek.at) > 2.5 then return end
+        seek.hold = 0
+    end
     S.pos_target = p
     if abs(p - S.pos) > 1.0 then S.pos = p end
 end
@@ -1215,6 +1226,7 @@ local function vol_update(mx, my, x1, x2, ty, cy, dt)
 
     local want = (vol.drag or now() < vol.pin or over_icon
                   or (vol.open > 0.25 and over_all)) and 1 or 0
+    if seek.drag then want = 0 end
     if want > 0 then vol.touch = now() end
     if want == 0 and now() - vol.touch < 0.3 then want = 1 end
 
@@ -1384,13 +1396,24 @@ local function draw_expanded(alpha, dt)
     local bar_x2 = right
     local bar_x1 = x + pad
     local span   = max(1, bar_x2 - bar_x1)
-    local done   = (S.duration or 0) > 0 and saturate(S.pos / S.duration) or 0
+    local length = S.duration or 0
+
+    if seek.drag then
+        if length > 0 then seek.at = saturate((mx - bar_x1) / span) * length end
+        last_touch = now()
+    end
+
+    local shown = seek.drag and seek.at or S.pos
+    local done  = length > 0 and saturate(shown / length) or 0
 
     draw_track(bar_x1, bar_x2, bar_y, bar_h, done, alpha)
 
     hit.progress = { x = bar_x1, y = bar_y - 9 * k, w = span, h = bar_h + 18 * k }
-    if in_rect(mx, my, hit.progress.x, hit.progress.y, hit.progress.w, hit.progress.h) then
-        Render.FilledCircle(Vec2(bar_x1 + span * done, bar_y + bar_h * 0.5), 5 * k,
+    local over_bar = in_rect(mx, my, hit.progress.x, hit.progress.y,
+                             hit.progress.w, hit.progress.h)
+    if seek.drag or over_bar then
+        Render.FilledCircle(Vec2(bar_x1 + span * done, bar_y + bar_h * 0.5),
+                            (seek.drag and 6.5 or 5) * k,
                             rgba(255, 255, 255, 238 * alpha))
     end
 
@@ -1403,8 +1426,8 @@ local function draw_expanded(alpha, dt)
     local time_a = alpha * (1 - vol_t)
     if time_a > 0.01 then
         local dim = rgba(255, 255, 255, 140 * time_a)
-        text(fonts.regular, 11 * k, fmt_time(S.pos), bar_x1, time_y, dim)
-        local remain = "-" .. fmt_time(max(0, (S.duration or 0) - S.pos))
+        text(fonts.regular, 11 * k, fmt_time(shown), bar_x1, time_y, dim)
+        local remain = "-" .. fmt_time(max(0, length - shown))
         text(fonts.regular, 11 * k, remain,
              bar_x2 - text_w(fonts.regular, 11 * k, remain), time_y, dim)
     end
@@ -1453,7 +1476,11 @@ local function draw_expanded(alpha, dt)
 end
 
 local function draw(dt)
-    if anim.alpha <= 0.01 then hit_reset() return end
+    if anim.alpha <= 0.01 then
+        seek.drag = false
+        hit_reset()
+        return
+    end
 
     local alpha = anim.alpha
     local x, y, w, h = geom.x, geom.y, geom.w, geom.h
@@ -1565,6 +1592,7 @@ local function click(mx, my)
     if p and in_rect(mx, my, p.x, p.y, p.w, p.h) and (S.duration or 0) > 0 then
         local target = saturate((mx - p.x) / max(1, p.w)) * S.duration
         S.pos, S.pos_target = target, target
+        seek.at, seek.hold = target, now() + 1.5
         control("seek", target)
         return
     end
@@ -1587,6 +1615,18 @@ local function on_key(data)
         return false
     end
 
+    if seek.drag and data.event == Enum.EKeyEvent.EKeyEvent_KEY_UP then
+        local target = seek.at
+        seek.drag  = false
+        seek.hold  = now() + 1.5
+        S.pos, S.pos_target = target, target
+        control("seek", target)
+        last_touch = now()
+        mouse_down = false
+        last_click = now()
+        return false
+    end
+
     if cursor_in_menu(mx, my) or not over_island(mx, my) then
         mouse_down = false
         return
@@ -1601,6 +1641,14 @@ local function on_key(data)
             vol.pin   = now() + 4.0
             vol.level = saturate((mx - vt.x) / max(1, vt.w))
             vol_send(vol.level, true)
+            return false
+        end
+
+        local pr = hit.progress
+        if pr and in_rect(mx, my, pr.x, pr.y, pr.w, pr.h) and (S.duration or 0) > 0 then
+            seek.drag  = true
+            seek.at    = saturate((mx - pr.x) / max(1, pr.w)) * S.duration
+            last_touch = now()
         end
         return false
     elseif data.event == Enum.EKeyEvent.EKeyEvent_KEY_UP then
@@ -1685,6 +1733,7 @@ function island.OnGameEnd()
     anim.open, anim.open_vel = 0, 0
     mouse_down = false
     vol.drag, vol.open, vol.pin = false, 0, 0
+    seek.drag, seek.hold = false, 0
     hit_reset()
 end
 
