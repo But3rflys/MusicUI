@@ -159,6 +159,7 @@ M.lyr_width = lyr:Slider("Ширина капсулы", 320, 900, 520, "%d px")
 M.eq = gExtra:Switch("Эквалайзер", true, "\u{f1de}")
 
 local eqx = gear(M.eq, gExtra, "Эквалайзер")
+M.eq_style = eqx:Combo("Вид", { "Полосы", "Волна" }, 0)
 M.bars     = eqx:Slider("Полосы", 3, 12, 5)
 M.sens     = eqx:Slider("Чувствительность", 0.5, 2.0, 1.0, "%.2f×")
 M.eq_music = eqx:Switch("Только музыка", true)
@@ -194,6 +195,7 @@ local function read_menu()
     C.lyr_width   = M.lyr_width:Get()
 
     C.eq       = M.eq:Get()
+    C.eq_style = M.eq_style:Get()
     C.bars     = M.bars:Get()
     C.sens     = M.sens:Get()
     C.eq_music = M.eq_music:Get()
@@ -926,9 +928,7 @@ local function draw_cover(x, y, size, rounding, alpha)
     Render.FilledCircle(center, size * 0.09, rgba(255, 255, 255, 70 * alpha))
 end
 
-local function draw_bars(x, y, w, h, alpha)
-    local n = C.bars or 4
-    if n <= 0 or not C.eq then return end
+local function draw_bars(x, y, w, h, n, alpha)
     local pitch = w / n
     local bw    = max(2, pitch * 0.56)
     local off   = (pitch - bw) * 0.5
@@ -940,6 +940,89 @@ local function draw_bars(x, y, w, h, alpha)
         local bx    = x + (i - 1) * pitch + off
         Render.FilledRect(Vec2(bx, cy - bh * 0.5), Vec2(bx + bw, cy + bh * 0.5),
                           color, bw * 0.5, FL)
+    end
+end
+
+local function catmull(p0, p1, p2, p3, t)
+    local t2 = t * t
+    return 0.5 * (2 * p1
+                + (-p0 + p2) * t
+                + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+                + (-p0 + 3 * p1 - 3 * p2 + p3) * t2 * t)
+end
+
+local wave_lvl = {}
+
+local function wave_node(i, n)
+    if i < 1 or i > n then return 0 end
+    return saturate(anim.bars[i] or 0)
+end
+
+local function wave_sample(n, w)
+    local seg_steps = clamp(floor(w / n + 0.5), 3, 16)
+    local count = 0
+    for seg = 0, n do
+        local p0, p1 = wave_node(seg - 1, n), wave_node(seg, n)
+        local p2, p3 = wave_node(seg + 1, n), wave_node(seg + 2, n)
+        for step = 0, seg_steps - 1 do
+            count = count + 1
+            wave_lvl[count] = saturate(catmull(p0, p1, p2, p3, step / seg_steps))
+        end
+    end
+    count = count + 1
+    wave_lvl[1], wave_lvl[count] = 0, 0
+    return count
+end
+
+local function draw_wave(x, y, w, h, n, alpha)
+    local count = wave_sample(n, w)
+    if count < 2 then return end
+
+    Render.PushClip(Vec2(x, y), Vec2(x + w, y + h), true)
+
+    local base   = y + h
+    local step   = w / (count - 1)
+    local line_w = max(2, h * 0.10)
+    local half   = line_w * 0.5
+    local span   = max(1, h - line_w)
+    local fill   = accent_color(alpha * 0.34)
+
+    Render.FilledRect(Vec2(x, base - line_w), Vec2(x + w, base),
+                      accent_color(alpha * 0.45), line_w * 0.5, FL)
+
+    local pts = {}
+    local seg_x, seg_cy
+    for i = 1, count do
+        local px = min(x + w, x + (i - 1) * step)
+        local cy = clamp(base - half - span * wave_lvl[i], y + half, base - half)
+        pts[i] = Vec2(px, cy)
+
+        local gx = floor(px + 0.5)
+        if not seg_x then
+            seg_x, seg_cy = gx, cy
+        elseif gx > seg_x then
+            local top = (seg_cy + cy) * 0.5 + half
+            if base - top > 0.5 then
+                Render.FilledRect(Vec2(seg_x, top), Vec2(gx, base), fill)
+            end
+            seg_x, seg_cy = gx, cy
+        end
+    end
+
+    pts[count + 1] = Vec2(x + w, base + line_w * 2)
+    pts[count + 2] = Vec2(x, base + line_w * 2)
+
+    Render.PolyLine(pts, accent_color(alpha * 0.95), line_w)
+    Render.PopClip()
+end
+
+local function draw_eq(x, y, w, h, alpha)
+    local n = C.bars or 4
+    if n <= 0 or not C.eq then return end
+    if C.eq_style == 1 then
+        draw_wave(x, y, w, h, n, alpha)
+    else
+        draw_bars(x, y, w, h, n, alpha)
     end
 end
 
@@ -1315,7 +1398,7 @@ local function draw_compact(alpha, dt)
     local eq_h = BASE.compact_h * k * 0.46
     local eq_x = x + cw - 4 * k - eq_w
     if eq_w > 0 then
-        draw_bars(eq_x, y + pad + (size - eq_h) * 0.5, eq_w, eq_h, alpha)
+        draw_eq(eq_x, y + pad + (size - eq_h) * 0.5, eq_w, eq_h, alpha)
     end
 
     local gap = 10 * k
@@ -1371,7 +1454,7 @@ local function draw_expanded(alpha, dt)
                      box, rgba(255, 255, 255, 155 * alpha * t), alpha, dt)
     Render.PopClip()
 
-    draw_bars(right - 42 * k, y + 24 * k, 42 * k, 18 * k, alpha * 0.9)
+    draw_eq(right - 42 * k, y + 24 * k, 42 * k, 18 * k, alpha * 0.9)
 
     if C.lyrics and C.lyr_inside and anim.lyr_h > 1 then
         local size = 13 * k
