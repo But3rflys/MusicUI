@@ -21,9 +21,12 @@ class SpectrumAnalyzer:
     AVAILABLE = np is not None
 
     ATTACK = 0.035
-    DECAY = 0.20
+    DECAY = 0.16
     DYN_RANGE_DB = 42.0
     REF_DECAY_DB = 7.0
+    NOISE_DB = -74.0
+    SHAPE = 1.35
+    TILT_POW = 0.12
 
     def __init__(self, bands: int = config.DEFAULT_BANDS,
                  samplerate: int = config.SAMPLE_RATE,
@@ -34,6 +37,7 @@ class SpectrumAnalyzer:
         self.samplerate = samplerate
         self.fft_size = fft_size
         self._window = np.hanning(fft_size).astype(np.float32)
+        self._scale = 2.0 / max(1e-9, float(self._window.sum()))
         self._buf = np.zeros(fft_size, dtype=np.float32)
         self._ref_db = -60.0
         self._levels: list[float] = []
@@ -57,7 +61,7 @@ class SpectrumAnalyzer:
             b_lo = max(1, int(f_lo / hz_per_bin))
             b_hi = max(b_lo + 1, int(f_hi / hz_per_bin))
             edges.append((b_lo, min(b_hi, self.fft_size // 2)))
-            tilt.append((f_lo / lo_hz) ** 0.30)
+            tilt.append((f_lo / lo_hz) ** self.TILT_POW)
 
         self._edges = edges
         self._tilt = tilt
@@ -73,12 +77,14 @@ class SpectrumAnalyzer:
             self._buf = np.concatenate((self._buf[len(chunk):], chunk))
 
     def compute(self, dt: float) -> list[float]:
-        spectrum = np.abs(np.fft.rfft(self._buf * self._window))
+        buf = self._buf - float(np.mean(self._buf))
+        spectrum = np.abs(np.fft.rfft(buf * self._window)) * self._scale
+        power = spectrum * spectrum
         raw_db = []
 
         for (b_lo, b_hi), tilt in zip(self._edges, self._tilt):
-            slice_ = spectrum[b_lo:b_hi]
-            energy = float(np.sqrt(np.mean(slice_ * slice_))) if slice_.size else 0.0
+            slice_ = power[b_lo:b_hi]
+            energy = float(np.sqrt(float(slice_.sum()))) if slice_.size else 0.0
             raw_db.append(20.0 * math.log10(energy * tilt + 1e-9))
 
         peak_db = max(raw_db)
@@ -86,8 +92,11 @@ class SpectrumAnalyzer:
         floor_db = max(self._ref_db, -34.0) - self.DYN_RANGE_DB
 
         for i, db in enumerate(raw_db):
-            target = (db - floor_db) / self.DYN_RANGE_DB
-            target = min(1.0, max(0.0, target))
+            if db <= self.NOISE_DB:
+                target = 0.0
+            else:
+                target = min(1.0, max(0.0, (db - floor_db) / self.DYN_RANGE_DB)) ** self.SHAPE
+
             self._levels[i] = _smooth(self._levels[i], target, dt, self.ATTACK, self.DECAY)
 
         return list(self._levels)
