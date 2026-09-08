@@ -1,11 +1,11 @@
 # MusicUI
 
-> [**Скачать**](https://github.com/But3rflys/MusicUI/releases) / [исходники](https://github.com/But3rflys/MusicUI)
-
 ## Установка
 
-1. `MusicUI.lua` в `..\scripts\`
-2. запустить `MusicUI.exe`, следовать инструкциям
+1. [**скачать**](https://github.com/But3rflys/MusicUI/releases) последнюю версию
+2. распаковать архив в любое место/любую папку
+3. закинуть `MusicUI.lua` в `..\scripts\`
+4. запустить `MusicUI.exe`, следовать инструкциям
 
 ## Что стоит знать
 
